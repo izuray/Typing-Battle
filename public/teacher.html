@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Giảng viên - Typing Battle</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">⌨️ Typing <span>Battle</span></a>
+    <div class="row">
+      <span id="teacherBadge" class="tag ok hidden"></span>
+      <span id="connTag" class="tag">Đang kết nối...</span>
+      <button id="btnClose" class="btn ghost sm hidden">Đóng phòng</button>
+      <button id="btnLogout" class="btn ghost sm hidden">Đăng xuất</button>
+    </div>
+  </header>
+
+  <main class="container wide">
+    <!-- Bước 0: Đăng nhập Giáo viên -->
+    <section id="viewLogin" class="card hidden" style="max-width:440px;margin:40px auto">
+      <div class="icon center">🔐</div>
+      <h2 class="center">Đăng nhập Giảng viên</h2>
+      <p class="muted small center">Chỉ giảng viên đã đăng nhập mới có quyền tạo phòng thi cho lớp hoặc phòng Battle 1 vs 1.</p>
+      <form id="loginForm" class="stack" style="margin-top:16px">
+        <div>
+          <label for="loginUser">Tài khoản giảng viên</label>
+          <input id="loginUser" type="text" required autocomplete="username" placeholder="Nhập tài khoản...">
+        </div>
+        <div>
+          <label for="loginPass">Mật khẩu</label>
+          <input id="loginPass" type="password" required autocomplete="current-password" placeholder="Nhập mật khẩu..." style="width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--line);background:#0f1330;color:var(--text);font:inherit;outline:none">
+        </div>
+        <button id="btnLogin" type="submit" class="btn block lg">Đăng nhập</button>
+      </form>
+    </section>
+
+    <!-- Cài đặt (dùng cả khi tạo phòng và giữa các vòng) -->
+    <template id="tplSettings">
+      <div class="stack">
+        <div class="row">
+          <div class="grow">
+            <label>Thời gian thi</label>
+            <select data-k="duration">
+              <option value="30">30 giây</option>
+              <option value="60" selected>1 phút</option>
+              <option value="90">1 phút 30</option>
+              <option value="120">2 phút</option>
+              <option value="180">3 phút</option>
+              <option value="300">5 phút</option>
+            </select>
+          </div>
+          <div class="grow">
+            <label>Nguồn đoạn văn</label>
+            <select data-k="source">
+              <option value="bank">Ghép ngẫu nhiên từ kho câu</option>
+              <option value="ai">AI (Gemini) sinh đoạn mới</option>
+              <option value="custom">Tự nhập đoạn văn</option>
+            </select>
+          </div>
+        </div>
+        <div data-show="ai">
+          <label>Chủ đề cho AI (tuỳ chọn)</label>
+          <input type="text" data-k="topic" maxlength="100" placeholder="VD: lịch sử Việt Nam, an toàn thông tin, môi trường...">
+          <p class="small muted" data-ai-note></p>
+        </div>
+        <div data-show="custom">
+          <label>Đoạn văn của bạn</label>
+          <textarea data-k="customText" maxlength="5000" placeholder="Dán đoạn văn tiếng Việt vào đây..."></textarea>
+          <p class="small muted">Nếu sinh viên gõ hết đoạn văn trước khi hết giờ thì sẽ được tính là hoàn thành.</p>
+        </div>
+      </div>
+    </template>
+
+    <!-- Bước 1: Chọn loại phòng (Lớp học hoặc Battle 1v1) & Tạo phòng -->
+    <section id="viewCreate" class="card hidden" style="max-width:660px;margin:0 auto">
+      <h2>👩‍🏫 Tạo phòng thi mới</h2>
+      <div style="margin:14px 0">
+        <label>Chế độ phòng thi</label>
+        <div class="grid cols-2" id="roomTypePicker" style="gap:12px">
+          <button type="button" class="card center" data-type="class" style="cursor:pointer;padding:16px;border-color:var(--primary)">
+            <div style="font-size:1.8rem">🏫</div>
+            <div style="font-weight:800;margin-top:4px">Phòng thi cả lớp</div>
+            <div class="small muted">Tối đa 200 sinh viên cùng thi và xếp hạng</div>
+          </button>
+          <button type="button" class="card center" data-type="duel" style="cursor:pointer;padding:16px">
+            <div style="font-size:1.8rem">⚔️</div>
+            <div style="font-weight:800;margin-top:4px">Phòng Battle 1 vs 1</div>
+            <div class="small muted">Đúng 2 sinh viên thi đấu trực tiếp với nhau</div>
+          </button>
+        </div>
+      </div>
+      <div id="createSettings"></div>
+      <button id="btnCreate" class="btn block lg" style="margin-top:16px">Tạo phòng thi</button>
+    </section>
+
+    <!-- Bước 2: Điều khiển phòng -->
+    <section id="viewRoom" class="hidden">
+      <div class="layout-side">
+        <div class="stack">
+          <div class="card">
+            <div class="row between">
+              <div>
+                <h2 id="roomTitle" style="margin:0">Bảng xếp hạng</h2>
+                <div class="small muted" id="roomSub"></div>
+              </div>
+              <div class="row">
+                <div class="stat timer" id="timerBox" style="min-width:120px">
+                  <div class="v" id="timer">--:--</div>
+                  <div class="k" id="timerLabel">Chờ bắt đầu</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="lobbyCard">
+            <div class="row between">
+              <h2 style="margin:0">👥 Sinh viên trong phòng: <span id="playerCount">0</span></h2>
+            </div>
+            <div class="player-chips" id="playerChips" style="margin-top:12px"></div>
+          </div>
+
+          <div class="card">
+            <div class="table-wrap" id="board"></div>
+          </div>
+
+          <div class="card hidden" id="passageCard">
+            <div class="row between"><h2 style="margin:0">📄 Đoạn văn</h2><span class="tag" id="passageSource"></span></div>
+            <p id="passageText" class="muted" style="font-family:var(--mono);margin-bottom:0"></p>
+          </div>
+        </div>
+
+        <aside class="stack">
+          <div class="card center">
+            <div class="muted small" id="roomTypeLabel">Mã phòng</div>
+            <div class="room-code" id="roomCode">------</div>
+            <div class="muted small">Sinh viên vào trang</div>
+            <div class="join-url" id="joinUrl"></div>
+            <div class="row" style="justify-content:center;margin-top:10px">
+              <button class="btn ghost sm" id="btnCopy">📋 Sao chép link</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div id="controlsLobby" class="stack">
+              <h2>⚙️ Cài đặt vòng thi</h2>
+              <div id="roomSettings"></div>
+              <button id="btnStart" class="btn ok block lg">▶ Bắt đầu thi</button>
+            </div>
+            <div id="controlsRunning" class="stack hidden">
+              <h2>⏱ Đang thi...</h2>
+              <button id="btnEnd" class="btn danger block">⏹ Kết thúc sớm</button>
+            </div>
+            <div id="controlsFinished" class="stack hidden">
+              <h2>🏁 Đã kết thúc vòng <span id="roundNo"></span></h2>
+              <button id="btnExport" class="btn ghost block">⬇ Xuất kết quả (CSV)</button>
+              <button id="btnNewRound" class="btn block">🔄 Vòng mới</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <div id="preparing" class="overlay hidden">
+      <div class="spinner"></div>
+      <div>Đang chuẩn bị đoạn văn...</div>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/common.js"></script>
+  <script src="/js/teacher.js"></script>
+</body>
+</html>

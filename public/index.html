@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Typing Battle - Thi gõ phím tiếng Việt</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">⌨️ Typing <span>Battle</span></a>
+    <div class="row">
+      <div class="seg" id="mainTabs">
+        <button type="button" data-tab="join" class="active">🏫 Vào phòng thi</button>
+        <button type="button" data-tab="practice">🎯 Tự luyện gõ phím</button>
+      </div>
+      <a class="btn ghost sm" href="/teacher.html" title="Chỉ dành cho giảng viên">🔐 Giảng viên</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- TAB 1: VÀO PHÒNG THI -->
+    <div id="tabJoin">
+      <section class="hero">
+        <h1>Thi gõ phím <span class="brand"><span>tiếng Việt</span></span></h1>
+        <p>Nhập tên và mã phòng do giảng viên cung cấp để tham gia phòng thi của lớp hoặc phòng đấu Battle 1 vs 1.</p>
+      </section>
+
+      <section class="card stack" style="max-width:480px;margin:28px auto">
+        <div class="icon center">🏫</div>
+        <h2 class="center">Vào phòng thi</h2>
+        <div>
+          <label for="name">Họ tên / Mã sinh viên</label>
+          <input id="name" type="text" maxlength="24" placeholder="VD: Nguyễn Văn An - K66" autocomplete="nickname">
+        </div>
+        <div>
+          <label for="code">Mã phòng thi (5–6 chữ số)</label>
+          <input id="code" class="code-input" type="text" inputmode="numeric" maxlength="6" placeholder="------">
+        </div>
+        <button id="btnJoin" class="btn block lg">Vào phòng thi</button>
+      </section>
+
+      <section class="card" style="max-width:680px;margin:24px auto 0">
+        <h2>📏 Luật chấm điểm & Quy định phòng thi</h2>
+        <ul class="help-list">
+          <li>Mọi sinh viên trong phòng gõ <b>cùng một đoạn văn</b> trong <b>thời gian cố định</b>.</li>
+          <li>Bảng xếp hạng cập nhật <b>theo thời gian thực</b> dựa trên <b>số ký tự gõ đúng</b>. Nếu bằng nhau, ai <b>đạt được sớm hơn</b> xếp trên, sau đó đến <b>ít lỗi chính tả hơn</b>.</li>
+          <li>Lỗi chính tả được tính khi bạn gõ xong một từ (bấm dấu cách) mà từ đó sai.</li>
+          <li>Có sẵn bộ gõ <b>Telex / VNI</b> trên web, nên <b>hãy tắt Unikey/EVKey</b>. Nếu muốn dùng bộ gõ của máy, chọn chế độ "Bộ gõ máy".</li>
+          <li>Hệ thống tự động chặn và cảnh báo gian lận nếu sao chép/dán (copy/paste) hoặc dùng công cụ tự động gõ (auto-text).</li>
+        </ul>
+      </section>
+    </div>
+
+    <!-- TAB 2: TỰ LUYỆN GÕ PHÍM -->
+    <div id="tabPractice" class="hidden stack">
+      <div class="card">
+        <div class="row between">
+          <div>
+            <h2 style="margin:0">🎯 Tự luyện gõ phím cá nhân</h2>
+            <div class="small muted">Luyện tốc độ và độ chính xác với đoạn văn ngẫu nhiên trước khi vào phòng thi.</div>
+          </div>
+          <div class="row">
+            <div>
+              <select id="pracDuration">
+                <option value="30">30 giây</option>
+                <option value="60" selected>1 phút</option>
+                <option value="120">2 phút</option>
+                <option value="180">3 phút</option>
+              </select>
+            </div>
+            <div class="seg" id="pracImeSwitch" title="Chọn kiểu gõ tiếng Việt">
+              <button type="button" data-m="telex" class="active">Telex</button>
+              <button type="button" data-m="vni">VNI</button>
+              <button type="button" data-m="system">Bộ gõ máy</button>
+            </div>
+            <button id="btnPracNew" class="btn ok">🔄 Bài mới</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat timer" id="pracTimerBox">
+          <div class="v" id="pracTime">1:00</div>
+          <div class="k">Thời gian</div>
+        </div>
+        <div class="stat">
+          <div class="v" id="pracWpm">0</div>
+          <div class="k">WPM</div>
+        </div>
+        <div class="stat">
+          <div class="v" id="pracAcc">100%</div>
+          <div class="k">Chính xác</div>
+        </div>
+        <div class="stat">
+          <div class="v" id="pracCorrect">0</div>
+          <div class="k">Ký tự đúng / <span id="pracErr">0</span> lỗi</div>
+        </div>
+      </div>
+
+      <div class="typing-area">
+        <div class="passage-header">
+          <span>📖 Đoạn văn mẫu (nhìn vào đây để gõ)</span>
+          <span class="muted small" id="pracStatus">Gõ ký tự đầu tiên vào ô bên dưới để bắt đầu tính giờ</span>
+        </div>
+        <div id="pracPassage" class="passage"></div>
+
+        <div class="passage-header">
+          <span>✍️ Ô gõ của bạn</span>
+          <span><span class="kbd">Backspace</span> xoá 1 chữ · <span class="kbd">Ctrl</span>+<span class="kbd">Backspace</span> xoá cả từ</span>
+        </div>
+        <textarea
+          id="pracInput"
+          class="typing-input-box"
+          rows="3"
+          placeholder="Gõ nội dung đoạn văn phía trên vào đây để bắt đầu..."
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          data-gramm="false"
+          data-gramm_editor="false"
+          data-enable-grammarly="false"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-bwignore="true"
+          data-form-type="other"
+        ></textarea>
+      </div>
+    </div>
+  </main>
+  <footer class="foot">Typing Battle · Hệ thống thi & luyện gõ phím tiếng Việt</footer>
+
+  <script src="/js/vn.js"></script>
+  <script src="/js/common.js"></script>
+  <script src="/js/typing.js"></script>
+  <script>
+    (function () {
+      const { $, $$, toast, param, formatTime } = TB;
+      const nameEl = $('#name');
+      nameEl.value = localStorage.getItem('tb_name') || '';
+      const preset = param('code');
+      if (preset) $('#code').value = preset;
+
+      // ---------- chuyển tab Vào phòng thi / Tự luyện ----------
+      function switchTab(tab) {
+        $$('#mainTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+        $('#tabJoin').classList.toggle('hidden', tab !== 'join');
+        $('#tabPractice').classList.toggle('hidden', tab !== 'practice');
+        if (tab === 'practice' && !pracLoaded) loadPractice();
+      }
+      $$('#mainTabs button').forEach((b) => {
+        b.onclick = () => switchTab(b.dataset.tab);
+      });
+
+      // ---------- Vào phòng thi ----------
+      $('#code').addEventListener('input', (e) => { e.target.value = e.target.value.replace(/\D/g, ''); });
+      $('#code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnJoin').click(); });
+
+      $('#btnJoin').onclick = () => {
+        const n = nameEl.value.trim();
+        if (!n) { toast('Hãy nhập họ tên của bạn trước', true); nameEl.focus(); return; }
+        localStorage.setItem('tb_name', n);
+        const code = $('#code').value.trim();
+        if (!/^\d{5,6}$/.test(code)) return toast('Mã phòng gồm 5–6 chữ số do giảng viên cung cấp', true);
+        location.href = '/play.html?room=' + code;
+      };
+
+      // ---------- Tự luyện gõ phím ----------
+      let pracLoaded = false;
+      let pracMethod = localStorage.getItem('tb_ime') || 'telex';
+      let pracDurationMs = 60000;
+      let pracStartAt = 0;
+      let pracEndAt = 0;
+      let pracRunning = false;
+      let pracMistakes = 0;
+      let pracWrongMarked = new Set();
+
+      function updatePracImeUI() {
+        $$('#pracImeSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.m === pracMethod));
+      }
+      $$('#pracImeSwitch button').forEach((b) => {
+        b.onclick = () => {
+          pracMethod = b.dataset.m;
+          localStorage.setItem('tb_ime', pracMethod);
+          updatePracImeUI();
+          pracBox.focus();
+        };
+      });
+      updatePracImeUI();
+
+      const pracBox = new TypingBox({
+        passageEl: $('#pracPassage'),
+        inputEl: $('#pracInput'),
+        getMethod: () => pracMethod,
+        onChange: (typedRaw) => {
+          if (!pracRunning && typedRaw.length > 0) {
+            pracRunning = true;
+            pracStartAt = Date.now();
+            pracEndAt = pracStartAt + pracDurationMs;
+            $('#pracStatus').textContent = 'Đang luyện gõ...';
+          }
+          const typed = Array.from(VN.canonical(typedRaw));
+          const target = pracBox.target;
+          let correct = 0;
+          for (let i = 0; i < typed.length; i++) if (typed[i] === target[i]) correct++;
+          const complete = typed.length === target.length;
+          const committed = complete ? typed.length : typed.lastIndexOf(' ') + 1;
+          for (let i = 0; i < committed; i++) {
+            if (typed[i] !== target[i] && !pracWrongMarked.has(i)) {
+              pracWrongMarked.add(i);
+              pracMistakes++;
+            }
+          }
+          const elapsedMin = pracRunning ? Math.max(0.02, (Date.now() - pracStartAt) / 60000) : 0;
+          const wpm = elapsedMin > 0 ? Math.round(correct / 5 / elapsedMin) : 0;
+          const acc = correct + pracMistakes > 0 ? Math.round((correct / (correct + pracMistakes)) * 1000) / 10 : 100;
+          $('#pracCorrect').textContent = correct;
+          $('#pracErr').textContent = pracMistakes;
+          $('#pracWpm').textContent = wpm;
+          $('#pracAcc').textContent = acc + '%';
+          if (complete && correct === target.length) finishPractice();
+        }
+      });
+
+      function finishPractice() {
+        pracRunning = false;
+        pracBox.enable(false);
+        $('#pracStatus').textContent = '🏁 Đã hoàn thành! Bấm "Bài mới" để luyện tiếp.';
+        toast('🎉 Hoàn thành bài luyện! WPM: ' + $('#pracWpm').textContent + ' · Chính xác: ' + $('#pracAcc').textContent);
+      }
+
+      async function loadPractice() {
+        pracLoaded = true;
+        pracRunning = false;
+        pracStartAt = 0;
+        pracMistakes = 0;
+        pracWrongMarked = new Set();
+        const durSec = Number($('#pracDuration').value) || 60;
+        pracDurationMs = durSec * 1000;
+        $('#pracTime').textContent = formatTime(pracDurationMs);
+        $('#pracWpm').textContent = '0';
+        $('#pracAcc').textContent = '100%';
+        $('#pracCorrect').textContent = '0';
+        $('#pracErr').textContent = '0';
+        $('#pracTimerBox').classList.remove('low');
+        $('#pracStatus').textContent = 'Gõ ký tự đầu tiên vào ô bên dưới để bắt đầu tính giờ';
+        try {
+          const r = await fetch('/api/practice-passage?duration=' + durSec).then((x) => x.json());
+          pracBox.setPassage(r.text || '', '');
+          pracBox.enable(true);
+        } catch (_) {
+          toast('Không tải được đoạn văn luyện tập', true);
+        }
+      }
+
+      $('#btnPracNew').onclick = loadPractice;
+      $('#pracDuration').onchange = loadPractice;
+
+      setInterval(() => {
+        if (!pracRunning) return;
+        const rem = Math.max(0, pracEndAt - Date.now());
+        $('#pracTime').textContent = formatTime(rem);
+        $('#pracTimerBox').classList.toggle('low', rem < 10000);
+        if (rem <= 0) finishPractice();
+      }, 150);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thi đấu - Typing Battle</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">⌨️ Typing <span>Battle</span></a>
+    <div class="row">
+      <div class="seg" id="imeSwitch" title="Chọn kiểu gõ tiếng Việt">
+        <button type="button" data-m="telex" class="active">Telex</button>
+        <button type="button" data-m="vni">VNI</button>
+        <button type="button" data-m="system">Bộ gõ máy</button>
+      </div>
+      <span id="connTag" class="tag">Đang kết nối...</span>
+      <button id="btnLeave" class="btn ghost sm">Rời phòng</button>
+    </div>
+  </header>
+
+  <main class="container wide">
+    <!-- Phòng chờ (lớp học hoặc 1-1 do giảng viên tạo) -->
+    <section id="viewLobby" class="hidden">
+      <div class="grid cols-2">
+        <div class="card center stack">
+          <div class="muted small" id="lobbyModeLabel">Mã phòng</div>
+          <div class="room-code" id="lobbyCode">------</div>
+          <p id="lobbyWaitText" class="muted">Đang chờ giảng viên bắt đầu vòng thi...</p>
+        </div>
+
+        <div class="card stack">
+          <h2>👥 Sinh viên trong phòng (<span id="lobbyCount">0</span>)</h2>
+          <div id="lobbyPlayers" class="player-chips"></div>
+          <div class="muted small" id="imeNote" style="margin-top:auto;padding-top:12px;border-top:1px solid var(--line)">
+            💡 Đang bật bộ gõ <b>Telex</b> tích hợp trên web — hãy <b>tắt Unikey/EVKey</b> (hoặc chuyển sang tiếng Anh) để không bị gõ đúp dấu. Nếu muốn dùng Unikey của máy, bấm <b>"Bộ gõ máy"</b> ở góc trên.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Màn hình gõ phím -->
+    <section id="viewGame" class="hidden">
+      <div class="layout-side" id="gameLayout">
+        <div class="stack">
+          <div class="stats">
+            <div class="stat timer" id="timerBox">
+              <div class="v" id="stTime">1:00</div>
+              <div class="k">Thời gian</div>
+            </div>
+            <div class="stat">
+              <div class="v" id="stWpm">0</div>
+              <div class="k">WPM</div>
+            </div>
+            <div class="stat">
+              <div class="v" id="stAcc">100%</div>
+              <div class="k">Chính xác</div>
+            </div>
+            <div class="stat">
+              <div class="v" id="stCorrect">0</div>
+              <div class="k">Ký tự đúng / <span id="stErr">0</span> lỗi</div>
+            </div>
+          </div>
+
+          <!-- Thanh tiến độ đối đầu 1-1 -->
+          <div id="duelRace" class="card race hidden">
+            <div class="lane me">
+              <div class="row between small">
+                <span>🟢 <b id="meName">Bạn</b> <span class="tag" id="meWins"></span></span>
+                <span class="muted"><b id="meScore">0</b> ký tự · <span id="meWpm">0</span> WPM</span>
+              </div>
+              <div class="bar"><i id="meBar" style="width:0%"></i></div>
+            </div>
+            <div class="lane opp">
+              <div class="row between small">
+                <span>🔴 <b id="oppName">Đối thủ</b> <span class="tag" id="oppWins"></span></span>
+                <span class="muted"><b id="oppScore">0</b> ký tự · <span id="oppWpm">0</span> WPM</span>
+              </div>
+              <div class="bar"><i id="oppBar" style="width:0%"></i></div>
+            </div>
+          </div>
+
+          <!-- Khung đoạn văn ở trên + Ô gõ của sinh viên ở dưới -->
+          <div class="typing-area">
+            <div class="passage-header">
+              <span>📖 Đoạn văn mẫu (nhìn vào đây để gõ)</span>
+              <span>Nguồn: <b id="srcLabel">—</b></span>
+            </div>
+            <div id="passage" class="passage" aria-label="Đoạn văn mẫu"></div>
+
+            <div class="passage-header">
+              <span>✍️ Ô gõ của bạn (gõ nội dung đoạn văn phía trên vào đây)</span>
+              <span><span class="kbd">Backspace</span> xoá 1 chữ · <span class="kbd">Ctrl</span>+<span class="kbd">Backspace</span> xoá cả từ</span>
+            </div>
+            <textarea
+              id="typingInput"
+              class="typing-input-box"
+              rows="3"
+              placeholder="Bắt đầu gõ tại đây khi hết đếm ngược..."
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-gramm="false"
+              data-gramm_editor="false"
+              data-enable-grammarly="false"
+              data-lpignore="true"
+              data-1p-ignore="true"
+              data-bwignore="true"
+              data-form-type="other"
+            ></textarea>
+          </div>
+        </div>
+
+        <aside class="card stack" id="sideBoard">
+          <div class="row between">
+            <h2 style="margin:0"><span class="live-dot"></span>Bảng xếp hạng trực tiếp</h2>
+            <span class="tag ok" id="myRankTag">Hạng —</span>
+          </div>
+          <div class="table-wrap" id="liveBoard"></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Kết quả -->
+    <section id="viewResult" class="hidden stack">
+      <div class="card center stack">
+        <div id="duelBanner" class="big-result hidden"></div>
+        <h2 id="resTitle">🏆 Kết quả vòng thi</h2>
+        <div id="podium" class="podium"></div>
+        <p class="muted small">Đang chờ giảng viên bắt đầu vòng tiếp theo...</p>
+      </div>
+      <div class="card">
+        <div class="table-wrap" id="finalBoard"></div>
+      </div>
+    </section>
+
+    <!-- Đếm ngược 3-2-1 -->
+    <div id="countdownOverlay" class="overlay hidden">
+      <div class="muted">Nhìn đoạn văn và chuẩn bị gõ!</div>
+      <div class="countdown-num" id="countdownNum">3</div>
+    </div>
+
+    <div id="preparing" class="overlay hidden">
+      <div class="spinner"></div>
+      <div>Đang chuẩn bị đoạn văn...</div>
+    </div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/vn.js"></script>
+  <script src="/js/common.js"></script>
+  <script src="/js/typing.js"></script>
+  <script src="/js/play.js"></script>
+</body>
+</html>

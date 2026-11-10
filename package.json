@@ -1,0 +1,22 @@
+{
+  "name": "typing-battle",
+  "version": "1.0.0",
+  "description": "Thi đấu gõ phím tiếng Việt thời gian thực: phòng lớp học do giáo viên tạo và đấu 1-1.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test/vn.test.js && node test/game.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}

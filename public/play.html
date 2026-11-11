@@ -4,7 +4,49 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Thi đấu - Typing Battle</title>
-  <link rel="stylesheet" href="/css/style.css">
+  <script>
+    /* Bảo vệ cấp 0 chạy ngay lập tức trong <head> (chống bóp mạng chậm để bật F12 / hook JS) */
+    (function () {
+      var vault = {
+        valueDesc: Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value'),
+        attachShadow: Element.prototype.attachShadow,
+        fill: CanvasRenderingContext2D.prototype.fill,
+        fillText: CanvasRenderingContext2D.prototype.fillText,
+        measureText: CanvasRenderingContext2D.prototype.measureText,
+        fillRect: CanvasRenderingContext2D.prototype.fillRect,
+        clearRect: CanvasRenderingContext2D.prototype.clearRect,
+        Path2D: window.Path2D,
+        WeakMap: window.WeakMap
+      };
+      var taken = false;
+      Object.defineProperty(window, '__takeNativeVault', {
+        configurable: false,
+        value: function () {
+          if (taken) return {};
+          taken = true;
+          return vault;
+        }
+      });
+      try {
+        HTMLCanvasElement.prototype.toDataURL = function () { return 'data:,'; };
+        HTMLCanvasElement.prototype.toBlob = function (cb) { if (cb) cb(null); };
+        CanvasRenderingContext2D.prototype.getImageData = function (_x, _y, w, h) {
+          return new ImageData(Math.max(1, w || 1), Math.max(1, h || 1));
+        };
+      } catch (_) {}
+      window.addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
+      window.addEventListener('keydown', function (e) {
+        var k = (e.key || '').toUpperCase();
+        var c = e.ctrlKey || e.metaKey;
+        if (e.key === 'F12' || e.keyCode === 123 || (c && e.shiftKey && 'IJCK'.indexOf(k) >= 0) || (c && 'US'.indexOf(k) >= 0)) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }, true);
+    })();
+  </script>
+  <link rel="stylesheet" href="/css/style.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -149,9 +191,9 @@
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/js/vn.js?v=5"></script>
-  <script src="/js/common.js?v=5"></script>
-  <script src="/js/typing.js?v=5"></script>
-  <script src="/js/play.js?v=5"></script>
+  <script src="/js/vn.js?v=6"></script>
+  <script src="/js/common.js?v=6"></script>
+  <script src="/js/typing.js?v=6"></script>
+  <script src="/js/play.js?v=6"></script>
 </body>
 </html>

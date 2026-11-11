@@ -144,5 +144,26 @@ const { signTeacherToken, verifyTeacherToken } = require('../server');
   const detail = botRoom.inspectPlayer(human.id);
   assert(detail && detail.name === 'NguoiThat' && detail.timeline.length >= 1, 'inspectPlayer trả về biểu đồ timeline');
 
+  // 9. Chống Python Auto-typer bơm trực tiếp ký tự tiếng Việt có sẵn dấu (1 phím = 1 ký tự Unicode)
+  const pyBot = botRoom.join(null, 'PythonBot').player;
+  const pyText = 'Học tập là con đường ngắn nhất'; // 30 ký tự, có 8 chữ có dấu nhưng Python chỉ bắn đúng 30 sự kiện phím
+  const pyKeys = Array.from({ length: 30 }, (_, i) => ({
+    dt: 90 + ((i * 37) % 70),
+    dw: 50 + ((i * 19) % 35),
+    bs: 0
+  }));
+  const rPy = botRoom.progress(pyBot.token, pyText, start + 5000, { keys: pyKeys });
+  assert.strictEqual(rPy.rejected, true, 'phải chặn Python script bơm thẳng ký tự tiếng Việt có sẵn dấu không qua phím dấu');
+
+  // 10. Kiểm tra Polymorphic Vector Glyphs (không thể dịch ngược bằng command signature)
+  const glyphs = require('../src/glyphs');
+  const sigs = new Set();
+  for (let i = 0; i < 12; i++) {
+    const p = glyphs.jitteredPath('a');
+    assert(!/[LQ]/.test(p), 'tất cả L/Q phải được quy đổi về đường cong bậc ba C');
+    sigs.add(p.replace(/[^MCZ]/g, ''));
+  }
+  assert(sigs.size > 1, 'cùng một chữ cái phải sinh ra số lượng lệnh M/C/Z biến thiên ngẫu nhiên');
+
   console.log('game.js & passages.js: all tests passed');
 })();

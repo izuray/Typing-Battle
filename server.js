@@ -357,6 +357,7 @@ io.on('connection', (socket) => {
       name: res.player.name,
       typed: res.player.typed,
       charStates: room.computeCharStates(Array.from(res.player.typed || '')),
+      extraGlyphs: room.extraGlyphsForPlayer(res.player),
       snapshot: room.snapshot()
     });
   });
@@ -389,6 +390,7 @@ io.on('connection', (socket) => {
     const ackPayload = {
       ok: true,
       charStates: res.charStates,
+      nextGlyphs: res.nextGlyphs || null,
       correct: res.correct,
       mistakes: res.mistakes
     };

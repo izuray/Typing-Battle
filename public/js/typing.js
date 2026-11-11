@@ -1,21 +1,29 @@
 /*
- * typing.js - Hiển thị đoạn văn Vector Glyphs trên <canvas> (chống đọc DOM & chống đọc WebSocket)
- *             + Chặn phím tắt F12/DevTools + Chống Auto-typer.
+ * typing.js - Bảo vệ đa lớp chống F12 (kể cả khi bóp mạng), chống đọc DOM/Canvas,
+ *             chống giải mã Vector Glyphs và chống Python Auto-typer (pynput/pyautogui/keyboard).
  *
- * Các lớp bảo vệ chống F12 / DOM / JS ngầm / Extension / VS Code Socket Script:
- *  1. Lưu toàn bộ hàm Native C++ ngay khi trang nạp (HTMLTextAreaElement.prototype.value,
- *     CanvasRenderingContext2D.prototype.fill/fillText/measureText)
- *     -> Sinh viên mở F12 Console hay dùng Extension ghi đè prototype để bắt chữ cũng vô tác dụng.
- *  2. Chế độ Phòng thi (Vector Glyphs): Server chuyển từng chữ thành đường cong vector biến dạng
- *     ngẫu nhiên (Path2D), KHÔNG gửi chuỗi văn bản qua mạng hay lưu trong bộ nhớ JS của trình duyệt.
- *  3. Kiểm tra sự kiện bàn phím thật (`Event.isTrusted` là thuộc tính [LegacyUnforgeable] của C++).
- *  4. Khoá setter .value bên ngoài của ô gõ và thu thập sinh trắc học nhịp phím (dt, dw, bs) gửi lên server.
+ * Các lớp bảo vệ:
+ *  1. Nhận kho hàm Native C++ từ Inline Head Guard (`window.__takeNativeVault()`) chạy ở mili-giây 0
+ *     ngay trong thẻ <head> trước khi bất kỳ script Console nào kịp can thiệp.
+ *  2. Đặt <canvas> bên trong Closed Shadow DOM (`attachShadow({ mode: 'closed' })`) và vô hiệu hoá
+ *     toàn bộ `toDataURL`, `toBlob`, `getImageData` -> Không thể tìm thấy <canvas> từ DOM hay chụp ảnh để OCR.
+ *  3. Streaming Vector Glyphs theo cửa sổ trượt (`appendGlyphs`): chỉ giữ một phần đoạn văn đang gõ,
+ *     gõ tới đâu server mới truyền tiếp nét vẽ tới đó.
+ *  4. Phát hiện mở F12 (DevTools) bằng độ lệch chuẩn hoá theo máy (Baseline Calibration) + Console Trap.
+ *  5. Chặn đứng Python Auto-typer:
+ *     - Chặn sự kiện `keydown` bơm ký tự Unicode tiếng Việt dựng sẵn (`KEYEVENTF_UNICODE`, `e.code === ''`).
+ *     - Khóa ô gõ 3 giây khi rời cửa sổ thi (`window.blur` / `Alt+Tab` sang Python/VS Code) và bắt quả tang
+ *       nếu có luồng phím tự động bắn vào ngay khi vừa chuyển cửa sổ.
  */
 (function () {
   'use strict';
 
-  // --- 1. Lưu giữ các hàm Native C++ ngay từ dòng đầu tiên ---
-  const nativeValueDesc = (function () {
+  // --- 1. Lấy kho hàm Native C++ đã được niêm phong từ đầu <head> (nếu có) ---
+  const vault = (typeof window !== 'undefined' && typeof window.__takeNativeVault === 'function')
+    ? window.__takeNativeVault()
+    : {};
+
+  const nativeValueDesc = vault.valueDesc || (function () {
     try {
       return Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value') ||
              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
@@ -24,32 +32,53 @@
     }
   })();
 
-  const nativeFill = (typeof CanvasRenderingContext2D !== 'undefined')
-    ? CanvasRenderingContext2D.prototype.fill
-    : null;
-  const nativeFillText = (typeof CanvasRenderingContext2D !== 'undefined')
-    ? CanvasRenderingContext2D.prototype.fillText
-    : null;
-  const nativeMeasureText = (typeof CanvasRenderingContext2D !== 'undefined')
-    ? CanvasRenderingContext2D.prototype.measureText
-    : null;
-  const nativeFillRect = (typeof CanvasRenderingContext2D !== 'undefined')
-    ? CanvasRenderingContext2D.prototype.fillRect
-    : null;
-  const nativeClearRect = (typeof CanvasRenderingContext2D !== 'undefined')
-    ? CanvasRenderingContext2D.prototype.clearRect
-    : null;
-  const NativePath2D = (typeof Path2D !== 'undefined') ? Path2D : null;
+  const nativeAttachShadow = vault.attachShadow || (
+    (typeof Element !== 'undefined' && Element.prototype.attachShadow)
+      ? Element.prototype.attachShadow
+      : null
+  );
+  const nativeFill = vault.fill || (
+    (typeof CanvasRenderingContext2D !== 'undefined') ? CanvasRenderingContext2D.prototype.fill : null
+  );
+  const nativeFillText = vault.fillText || (
+    (typeof CanvasRenderingContext2D !== 'undefined') ? CanvasRenderingContext2D.prototype.fillText : null
+  );
+  const nativeMeasureText = vault.measureText || (
+    (typeof CanvasRenderingContext2D !== 'undefined') ? CanvasRenderingContext2D.prototype.measureText : null
+  );
+  const nativeFillRect = vault.fillRect || (
+    (typeof CanvasRenderingContext2D !== 'undefined') ? CanvasRenderingContext2D.prototype.fillRect : null
+  );
+  const nativeClearRect = vault.clearRect || (
+    (typeof CanvasRenderingContext2D !== 'undefined') ? CanvasRenderingContext2D.prototype.clearRect : null
+  );
+  const NativePath2D = vault.Path2D || ((typeof Path2D !== 'undefined') ? Path2D : null);
+  const NativeWeakMap = vault.WeakMap || WeakMap;
 
   const nativeNow = (typeof performance !== 'undefined' && performance.now)
     ? performance.now.bind(performance)
     : Date.now.bind(Date);
 
+  // Vô hiệu hoá hoàn toàn việc trích xuất hình ảnh từ mọi thẻ <canvas> để chống Python OCR
+  (function disableCanvasExtraction() {
+    try {
+      if (typeof HTMLCanvasElement !== 'undefined') {
+        HTMLCanvasElement.prototype.toDataURL = function () { return 'data:,'; };
+        HTMLCanvasElement.prototype.toBlob = function (cb) { if (typeof cb === 'function') cb(null); };
+        if (HTMLCanvasElement.prototype.captureStream) {
+          HTMLCanvasElement.prototype.captureStream = function () { return null; };
+        }
+      }
+      if (typeof CanvasRenderingContext2D !== 'undefined') {
+        CanvasRenderingContext2D.prototype.getImageData = function (_x, _y, w, h) {
+          return new ImageData(Math.max(1, w || 1), Math.max(1, h || 1));
+        };
+      }
+    } catch (_) {}
+  })();
+
   /**
    * Kiểm tra sự kiện bàn phím có phải do phần cứng/trình duyệt tạo ra thật hay không.
-   * Theo chuẩn WebIDL, `isTrusted` là thuộc tính [LegacyUnforgeable] nằm trực tiếp trên từng
-   * thực thể Event với `configurable: false` và `get: function isTrusted() { [native code] }`.
-   * Không một đoạn mã JS nào có thể tạo sự kiện giả mà có `isTrusted === true` và `configurable === false`.
    */
   function isGenuineTrustedEvent(e) {
     if (!e || typeof e !== 'object') return false;
@@ -66,18 +95,17 @@
     return e.isTrusted === true;
   }
 
-  // --- 2. Chặn phím tắt F12 / DevTools / View Source & Gửi cảnh báo ngầm cho Giảng viên ---
+  // --- 2. Chặn phím tắt F12 / DevTools & Phát hiện mở F12 theo độ lệch chuẩn hoá (Baseline) ---
+  let devtoolsOpen = false;
   const devtoolsListeners = new Set();
 
   function setupAntiDevTools() {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-    // Chặn chuột phải toàn trang
     window.addEventListener('contextmenu', (e) => {
       e.preventDefault();
     }, true);
 
-    // Chặn F12, Ctrl+Shift+I/J/C/K, Ctrl+U, Ctrl+S
     window.addEventListener('keydown', (e) => {
       const key = (e.key || '').toUpperCase();
       const ctrlOrMeta = e.ctrlKey || e.metaKey;
@@ -89,35 +117,103 @@
       if (blocked) {
         e.preventDefault();
         e.stopPropagation();
-        devtoolsListeners.forEach((fn) => fn('Bấm phím tắt mở F12/DevTools'));
+        devtoolsListeners.forEach((fn) => fn('Bấm phím tắt mở F12/DevTools', devtoolsOpen));
         if (typeof TB !== 'undefined' && TB.toast) {
           TB.toast('🚫 Không được sử dụng công cụ F12 (DevTools) trong phòng thi!', true);
         }
         return false;
       }
     }, true);
+
+    let banner = null;
+    function ensureBanner() {
+      if (banner) return banner;
+      banner = document.createElement('div');
+      banner.className = 'overlay hidden';
+      banner.style.zIndex = '9999';
+      banner.style.background = 'rgba(20, 6, 14, 0.96)';
+      banner.style.padding = '24px';
+      banner.style.textAlign = 'center';
+      banner.innerHTML =
+        '<div style="font-size:4rem">🚫</div>' +
+        '<h2 style="color:#ff5c7a;font-size:1.8rem;margin:8px 0">PHÁT HIỆN ĐANG MỞ F12 (DEVTOOLS)!</h2>' +
+        '<p style="max-width:520px;color:#e8eaf6">Đoạn văn và ô gõ đã bị khoá để chống gian lận. ' +
+        'Vui lòng <b>đóng cửa sổ F12 (DevTools)</b> ngay lập tức để tiếp tục làm bài.<br>' +
+        '<span class="small muted">Hệ thống đã ghi nhận cảnh báo về bảng điều khiển của giảng viên.</span></p>';
+      document.body.appendChild(banner);
+      return banner;
+    }
+
+    // Ghi nhận độ chênh lệch khung cửa sổ ban đầu làm mốc chuẩn cho máy của sinh viên
+    // (nhờ đó máy Windows phóng to DPI 125%-150% hay có sẵn Sidebar không bị báo nhầm)
+    let baseW = Math.max(0, window.outerWidth - window.innerWidth);
+    let baseH = Math.max(0, window.outerHeight - window.innerHeight);
+    let lastOuterW = window.outerWidth;
+    let lastOuterH = window.outerHeight;
+
+    function checkDevTools() {
+      const curW = Math.max(0, window.outerWidth - window.innerWidth);
+      const curH = Math.max(0, window.outerHeight - window.innerHeight);
+
+      // Nếu người dùng thu phóng cả cửa sổ trình duyệt (outerWidth thay đổi), cập nhật lại mốc chuẩn
+      if (Math.abs(window.outerWidth - lastOuterW) > 10 || Math.abs(window.outerHeight - lastOuterH) > 10) {
+        lastOuterW = window.outerWidth;
+        lastOuterH = window.outerHeight;
+        if (curW < baseW) baseW = curW;
+        if (curH < baseH) baseH = curH;
+      }
+
+      // Khi mở F12 dạng gắn liền (docked), outerWidth giữ nguyên nhưng innerWidth/innerHeight sụt giảm mạnh (> 165px)
+      const dockedNow = (curW - baseW > 165) || (curH - baseH > 165) || (curW > 420) || (curH > 420);
+
+      // Kiểm tra bằng console getter trap (phát hiện cả khi mở sẵn F12 hoặc tách cửa sổ rời)
+      let consoleTrapped = false;
+      try {
+        const err = new Error();
+        Object.defineProperty(err, 'stack', {
+          configurable: true,
+          get: function () {
+            consoleTrapped = true;
+            return '';
+          }
+        });
+        console.debug(err);
+      } catch (_) {}
+
+      const isOpen = dockedNow || consoleTrapped;
+      if (isOpen !== devtoolsOpen) {
+        devtoolsOpen = isOpen;
+        const b = ensureBanner();
+        b.classList.toggle('hidden', !isOpen);
+        devtoolsListeners.forEach((fn) => fn('Mở cửa sổ F12 (DevTools)', isOpen));
+      }
+    }
+
+    setInterval(checkDevTools, 650);
+    window.addEventListener('resize', checkDevTools);
   }
 
   setupAntiDevTools();
 
-  // Cho phép bộ gõ tiếng Việt (Unikey/EVKey/IME điện thoại) thay thế 1 âm tiết tiếng Việt (tối đa ~8 ký tự),
-  // nhưng chặn dán cả cụm từ/câu dài.
+  const VN_PRECOMPOSED_RE = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
   const MAX_SINGLE_INPUT_CHARS = 8;
-  const PRIV = new WeakMap();
+  const PRIV = new NativeWeakMap();
 
   class TypingBox {
     constructor(opts) {
       const state = {
         passageEl: opts.passageEl,
         input: opts.inputEl,
+        examMode: !!opts.examMode,
         getMethod: opts.getMethod || (() => 'telex'),
         onChange: opts.onChange || (() => {}),
         onCheatAttempt: opts.onCheatAttempt || (() => {}),
-        mode: 'text', // 'text' (Tự luyện) | 'glyphs' (Phòng thi Vector chống lộ đề)
+        mode: 'text', // 'text' | 'glyphs'
         target: [],
         totalLen: 0,
         glyphPack: null,
         pathMap: new Map(),
+        spaceSet: new Set(),
         serverStates: '',
         serverCorrect: 0,
         serverMistakes: 0,
@@ -130,19 +226,26 @@
         canvas: null,
         ctx: null,
         scrollY: 0,
-        reportedDevtools: false
+        reportedDevtools: false,
+        focusLockUntil: 0,
+        blockedWhileLocked: 0,
+        unicodeInjectCount: 0,
+        lastUnicodeInjectAt: 0
       };
       PRIV.set(this, state);
       this._initCanvas(state);
       this._lockInputElement(state);
       this._bindEvents(state);
+      this._bindFocusGuard(state);
 
-      devtoolsListeners.add((reason) => {
+      devtoolsListeners.add((reason, isOpen) => {
+        this._render(state);
         if (state.enabled && !state.reportedDevtools) {
           state.reportedDevtools = true;
           state.onCheatAttempt(reason);
           setTimeout(() => { state.reportedDevtools = false; }, 4000);
         }
+        if (!isOpen && state.enabled) this.focus();
       });
     }
 
@@ -182,25 +285,72 @@
       } catch (_) {}
     }
 
-    /** Khởi tạo Canvas hiển thị đoạn văn mẫu (chống đọc text từ DOM F12) */
+    /**
+     * Khởi tạo Canvas bên trong Closed Shadow DOM (`mode: 'closed'`):
+     * `document.querySelector('canvas')` và `passageEl.shadowRoot` đều trả về `null`,
+     * ngăn chặn hoàn toàn các đoạn mã JS ngoài Console truy cập vào phần tử Canvas.
+     */
     _initCanvas(state) {
       if (typeof document === 'undefined' || !state.passageEl) return;
       state.passageEl.innerHTML = '';
       state.passageEl.removeAttribute('aria-label');
+      state.passageEl.style.padding = '0';
+
       const canvas = document.createElement('canvas');
       canvas.style.width = '100%';
       canvas.style.height = '100%';
       canvas.style.display = 'block';
-      state.passageEl.style.padding = '0';
-      state.passageEl.appendChild(canvas);
+
+      let hostRoot = state.passageEl;
+      if (nativeAttachShadow) {
+        try {
+          hostRoot = nativeAttachShadow.call(state.passageEl, { mode: 'closed' });
+        } catch (_) {
+          hostRoot = state.passageEl;
+        }
+      }
+      hostRoot.appendChild(canvas);
       state.canvas = canvas;
       state.ctx = canvas.getContext('2d');
+
       if (typeof ResizeObserver !== 'undefined') {
         const ro = new ResizeObserver(() => this._render(state));
         ro.observe(state.passageEl);
       } else if (typeof window !== 'undefined') {
         window.addEventListener('resize', () => this._render(state));
       }
+    }
+
+    /**
+     * Chống sinh viên chuyển cửa sổ (Alt+Tab) sang VS Code / Terminal để bấm chạy script Python:
+     * Khi cửa sổ mất tiêu điểm trong lúc đang thi, tạm khóa ô gõ 3 giây khi quay lại.
+     * Nếu script Python tự động bắn phím trong lúc đang khóa -> bắt quả tang ngay lập tức!
+     */
+    _bindFocusGuard(state) {
+      if (typeof window === 'undefined' || !state.examMode) return;
+      let blurredInExam = false;
+      window.addEventListener('blur', () => {
+        if (!state.enabled) return;
+        blurredInExam = true;
+        state.focusLockUntil = nativeNow() + 2800;
+        state.blockedWhileLocked = 0;
+        state.onCheatAttempt('Rời khỏi cửa sổ trang thi trong lúc đang làm bài (Alt+Tab / Chuyển cửa sổ)');
+        this._render(state);
+      });
+      window.addEventListener('focus', () => {
+        if (!state.enabled || !blurredInExam) return;
+        blurredInExam = false;
+        state.focusLockUntil = nativeNow() + 2500;
+        state.blockedWhileLocked = 0;
+        if (typeof TB !== 'undefined' && TB.toast) {
+          TB.toast('⚠️ Bạn vừa rời khỏi cửa sổ thi! Ô gõ tạm khóa 2.5 giây để chống công cụ tự động.', true);
+        }
+        this._render(state);
+        setTimeout(() => {
+          this._render(state);
+          if (state.enabled) this.focus();
+        }, 2550);
+      });
     }
 
     _bindEvents(state) {
@@ -234,7 +384,10 @@
       input.addEventListener('contextmenu', (e) => e.preventDefault());
 
       input.addEventListener('beforeinput', (e) => {
-        if (!state.enabled) { e.preventDefault(); return; }
+        if (!state.enabled || devtoolsOpen || nativeNow() < state.focusLockUntil) {
+          e.preventDefault();
+          return;
+        }
         if (!isGenuineTrustedEvent(e)) {
           e.preventDefault();
           state.onCheatAttempt('Phát hiện sự kiện beforeinput giả lập (JS/Extension)');
@@ -296,6 +449,7 @@
       state.totalLen = state.target.length;
       state.glyphPack = null;
       state.pathMap.clear();
+      state.spaceSet.clear();
       state.serverStates = '';
       state.scrollY = 0;
       state.telemetry = [];
@@ -306,7 +460,7 @@
 
     /**
      * Dùng cho Phòng thi (Lớp học & Battle 1v1):
-     * Nhận các đường cong Vector (Path2D) từ server thay vì chuỗi văn bản.
+     * Nhận gói Vector Glyphs cửa sổ đầu tiên từ Server.
      */
     setGlyphs(glyphPack, typed, charStates) {
       const state = PRIV.get(this);
@@ -316,6 +470,12 @@
       state.glyphPack = glyphPack || null;
       state.totalLen = glyphPack && glyphPack.total ? glyphPack.total : 0;
       state.pathMap.clear();
+      state.spaceSet.clear();
+      if (glyphPack && Array.isArray(glyphPack.spaces)) {
+        for (let i = 0; i < glyphPack.spaces.length; i++) {
+          state.spaceSet.add(glyphPack.spaces[i]);
+        }
+      }
       if (glyphPack && Array.isArray(glyphPack.paths) && NativePath2D) {
         for (let i = 0; i < glyphPack.paths.length; i++) {
           const pair = glyphPack.paths[i];
@@ -330,6 +490,19 @@
       state.downMap.clear();
       state.lastKeyDownAt = 0;
       this.setTyped(typed || '', true);
+    }
+
+    /** Nối thêm các nét vẽ Vector Glyphs mới khi sinh viên gõ tiến lên (Sliding Window) */
+    appendGlyphs(nextPaths) {
+      const state = PRIV.get(this);
+      if (!state || !Array.isArray(nextPaths) || !NativePath2D) return;
+      for (let i = 0; i < nextPaths.length; i++) {
+        const pair = nextPaths[i];
+        if (pair && pair[1]) {
+          state.pathMap.set(pair[0], new NativePath2D(pair[1]));
+        }
+      }
+      this._render(state);
     }
 
     /** Cập nhật màu đúng/sai của từng ký tự từ phản hồi của Server */
@@ -347,6 +520,7 @@
       if (!state) return;
       state.enabled = !!on;
       state.input.disabled = !on;
+      if (!on) state.focusLockUntil = 0;
       if (on) this.focus();
       else state.input.blur();
       this._render(state);
@@ -379,7 +553,7 @@
     }
 
     _onKeyUp(state, e) {
-      if (!state.enabled) return;
+      if (!state.enabled || devtoolsOpen || nativeNow() < state.focusLockUntil) return;
       if (!isGenuineTrustedEvent(e)) {
         state.onCheatAttempt('Phát hiện sự kiện keyup giả lập (auto-typer)');
         return;
@@ -401,7 +575,18 @@
     }
 
     _onKeyDown(state, e) {
-      if (!state.enabled) { e.preventDefault(); return; }
+      if (!state.enabled || devtoolsOpen) { e.preventDefault(); return; }
+
+      // Nếu vừa chuyển từ cửa sổ ngoài (Python/VS Code) vào trong lúc đang khóa 2.5s mà có phím bắn liên tục:
+      if (nativeNow() < state.focusLockUntil) {
+        e.preventDefault();
+        state.blockedWhileLocked++;
+        if (state.blockedWhileLocked === 5) {
+          state.onCheatAttempt('Phát hiện công cụ ngoài (Python/Auto-typer) tự động bắn phím ngay sau khi chuyển cửa sổ');
+        }
+        return;
+      }
+
       if (!isGenuineTrustedEvent(e)) {
         e.preventDefault();
         state.onCheatAttempt('Phát hiện phím bấm giả lập bằng JavaScript (isTrusted=false)');
@@ -425,6 +610,33 @@
           this.setTyped(state.typed.replace(/\S*\s*$/, ''));
         }
         return;
+      }
+
+      // Chặn công cụ ngoài (Python pynput/keyboard/SendInput Unicode) bắn trực tiếp ký tự tiếng Việt có sẵn dấu
+      // khi đang ở chế độ bộ gõ Telex/VNI trên web (hoặc sự kiện không có mã phím phần cứng e.code):
+      if (e.key && e.key.length === 1 && this._isBuiltin(state)) {
+        const isPrecomposedVN = VN_PRECOMPOSED_RE.test(e.key);
+        const noHardwareCode = !e.code || e.code === '';
+        if (isPrecomposedVN || noHardwareCode) {
+          e.preventDefault();
+          const now = nativeNow();
+          if (now - state.lastUnicodeInjectAt < 1200) {
+            state.unicodeInjectCount++;
+          } else {
+            state.unicodeInjectCount = 1;
+          }
+          state.lastUnicodeInjectAt = now;
+          if (state.unicodeInjectCount >= 4) {
+            state.unicodeInjectCount = 0;
+            state.onCheatAttempt('Phát hiện công cụ ngoài (Python/Auto-typer) bơm chuỗi ký tự Unicode không qua bàn phím');
+            if (typeof TB !== 'undefined' && TB.toast) {
+              TB.toast('🚫 Phát hiện công cụ tự động bơm ký tự Unicode!', true);
+            }
+          } else if (typeof TB !== 'undefined' && TB.toast) {
+            TB.toast('💡 Hãy tắt Unikey/EVKey khi đang chọn bộ gõ Telex/VNI trên web (hoặc chuyển sang nút "Bộ gõ máy")!', true);
+          }
+          return;
+        }
       }
 
       if (e.key === 'Backspace' || (e.key && e.key.length === 1) || e.isComposing || e.key === 'Process') {
@@ -455,7 +667,10 @@
     }
 
     _onInput(state, e) {
-      if (!state.enabled) { this._setInputValue(state, state.typed); return; }
+      if (!state.enabled || devtoolsOpen || nativeNow() < state.focusLockUntil) {
+        this._setInputValue(state, state.typed);
+        return;
+      }
       if (!isGenuineTrustedEvent(e)) {
         this._setInputValue(state, state.typed);
         state.onCheatAttempt('Phát hiện sự kiện input giả lập từ script/extension');
@@ -534,6 +749,20 @@
       const padY = 14;
       ctx.font = '600 ' + fontSize + 'px "JetBrains Mono", "Cascadia Code", Consolas, monospace';
       ctx.textBaseline = 'top';
+
+      if (devtoolsOpen) {
+        ctx.fillStyle = '#ff5c7a';
+        nativeFillText.call(ctx, '🚫 Đã ẩn đoạn văn vì phát hiện mở F12 (DevTools).', padX, padY + lineH);
+        ctx.restore();
+        return;
+      }
+
+      if (nativeNow() < state.focusLockUntil) {
+        ctx.fillStyle = '#ffc857';
+        nativeFillText.call(ctx, '⚠️ Đang tạm khóa 2.5 giây do bạn vừa chuyển ra ngoài cửa sổ thi...', padX, padY + lineH);
+        ctx.restore();
+        return;
+      }
 
       if (state.mode === 'glyphs') {
         this._renderGlyphs(state, ctx, width, height, padX, padY);
@@ -618,12 +847,12 @@
       ctx.restore();
     }
 
-    /** Vẽ các đường cong Vector (Path2D) từ server mà không cần biết chữ gốc là gì */
+    /** Vẽ các đường cong Vector đa hình (Path2D) từ server theo cửa sổ trượt */
     _renderGlyphs(state, ctx, width, height, padX, padY) {
       const pack = state.glyphPack;
       if (!pack || !pack.total || !nativeFill) {
         ctx.fillStyle = '#9aa3d4';
-        nativeFillText.call(ctx, '⏳ Đang chờ bắt đầu vòng thi — Đoạn văn sẽ hiện ngay khi tính giờ...', padX, padY + 24);
+        nativeFillText.call(ctx, '⏳ Đang chờ bắt đầu vòng thi...', padX, padY + 24);
         return;
       }
 
@@ -635,6 +864,9 @@
       const typed = Array.from(VN.canonical(state.typed));
       const len = typed.length;
       const states = state.serverStates || '';
+      const hasSpacesList = state.spaceSet.size > 0;
+
+      const isSpaceAt = (idx) => hasSpacesList ? state.spaceSet.has(idx) : !state.pathMap.has(idx);
 
       const maxX = width - padX;
       const pos = new Array(total);
@@ -643,15 +875,14 @@
       let i = 0;
 
       while (i < total) {
-        const isSpace = !state.pathMap.has(i);
-        if (isSpace) {
+        if (isSpaceAt(i)) {
           if (x + cw > maxX) { x = padX; y += lineH; }
           pos[i] = { x, y, w: cw };
           x += cw;
           i++;
         } else {
           let j = i;
-          while (j < total && state.pathMap.has(j)) j++;
+          while (j < total && !isSpaceAt(j)) j++;
           const wordLen = j - i;
           const wordW = wordLen * cw;
           if (x > padX && x + wordW > maxX) {
@@ -706,6 +937,10 @@
           ctx.scale(invScale, invScale);
           nativeFill.call(ctx, path2d);
           ctx.restore();
+        } else if (!isSpaceAt(idx)) {
+          // Những từ ở xa phía sau chưa được Server stream xuống chỉ hiện chấm mờ
+          ctx.fillStyle = 'rgba(139, 147, 198, 0.25)';
+          nativeFillRect.call(ctx, p.x + 3, drawY + 20, Math.max(3, cw - 6), 3);
         }
       }
     }

@@ -4,7 +4,41 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Typing Battle - Thi gõ phím tiếng Việt</title>
-  <link rel="stylesheet" href="/css/style.css">
+  <script>
+    (function () {
+      var vault = {
+        valueDesc: Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value'),
+        attachShadow: Element.prototype.attachShadow,
+        fill: CanvasRenderingContext2D.prototype.fill,
+        fillText: CanvasRenderingContext2D.prototype.fillText,
+        measureText: CanvasRenderingContext2D.prototype.measureText,
+        fillRect: CanvasRenderingContext2D.prototype.fillRect,
+        clearRect: CanvasRenderingContext2D.prototype.clearRect,
+        Path2D: window.Path2D,
+        WeakMap: window.WeakMap
+      };
+      var taken = false;
+      Object.defineProperty(window, '__takeNativeVault', {
+        configurable: false,
+        value: function () {
+          if (taken) return {};
+          taken = true;
+          return vault;
+        }
+      });
+      window.addEventListener('contextmenu', function (e) { e.preventDefault(); }, true);
+      window.addEventListener('keydown', function (e) {
+        var k = (e.key || '').toUpperCase();
+        var c = e.ctrlKey || e.metaKey;
+        if (e.key === 'F12' || e.keyCode === 123 || (c && e.shiftKey && 'IJCK'.indexOf(k) >= 0) || (c && 'US'.indexOf(k) >= 0)) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }, true);
+    })();
+  </script>
+  <link rel="stylesheet" href="/css/style.css?v=6">
 </head>
 <body>
   <header class="topbar">
@@ -131,9 +165,9 @@
   </main>
   <footer class="foot">Typing Battle · Hệ thống thi & luyện gõ phím tiếng Việt</footer>
 
-  <script src="/js/vn.js?v=5"></script>
-  <script src="/js/common.js?v=5"></script>
-  <script src="/js/typing.js?v=5"></script>
+  <script src="/js/vn.js?v=6"></script>
+  <script src="/js/common.js?v=6"></script>
+  <script src="/js/typing.js?v=6"></script>
   <script>
     (function () {
       const { $, $$, toast, param, formatTime } = TB;

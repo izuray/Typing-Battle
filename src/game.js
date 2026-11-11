@@ -6,15 +6,17 @@
  *   2. Bằng nhau: ai đạt được số ký tự đúng đó sớm hơn xếp trên.
  *   3. Vẫn bằng: ít lỗi chính tả hơn xếp trên.
  *
- * Bảo mật & Chống Auto-Typing / Script ngầm phía Server:
+ * Bảo mật & Chống Auto-Typing / Script JS / Python Auto-typer phía Server:
  *   1. KHÔNG gửi đoạn văn dạng chữ (plaintext) xuống trình duyệt sinh viên.
- *      Server chuyển từng ký tự thành đường cong vector biến dạng ngẫu nhiên (SVG Path)
- *      qua `src/glyphs.js` và chỉ gửi khi vòng thi thực sự bước vào trạng thái `running`.
- *   2. Kiểm tra cờ `untrusted` từ client (khi phát hiện Event.isTrusted=false, paste, can thiệp .value).
- *   3. Kiểm tra tốc độ tối đa (`maxWpm` cấu hình theo phòng & `MAX_CPS`) + bước nhảy ký tự (`BURST_ALLOWANCE`).
- *   4. Kiểm tra số lượng phím bấm vật lý (`keyCount`) phải tương xứng với độ dài văn bản gõ.
- *   5. Phân tích sinh trắc học nhịp gõ (Keystroke Dynamics) + nhịp thời gian gói tin đến Server
- *      (Server Packet Arrival Cadence) + tỷ lệ xoá sửa lỗi (Backspace Realism) để phát hiện bot.
+ *   2. Streaming Vector Glyphs theo cửa sổ trượt (`GLYPH_WINDOW_AHEAD`):
+ *      Chỉ gửi trước ~95 ký tự đầu tiên dưới dạng đường cong đa hình. Sinh viên gõ đúng
+ *      đến đâu server mới truyền tiếp các nét vẽ của câu tiếp theo đến đó -> Không bao giờ
+ *      lấy trước được toàn bộ bài thi để nạp vào tool Python.
+ *   3. Kiểm tra tỷ lệ phím dấu tiếng Việt (`VN_DIACRITIC_RE`):
+ *      Người thật gõ tiếng Việt có dấu (dù bằng Telex, VNI hay Unikey) luôn phải bấm số phím
+ *      vật lý nhiều hơn số ký tự thành phẩm. Script Python bơm chuỗi Unicode có sẵn dấu sẽ bị
+ *      phát hiện và chặn ngay lập tức.
+ *   4. Phân tích sinh trắc học nhịp gõ (`detectBotKeystrokes`) + nhịp gói tin đến Server.
  */
 'use strict';
 
@@ -28,11 +30,13 @@ const DURATIONS = [30, 60, 90, 120, 180, 300];
 const MAX_CLASS_PLAYERS = 200;
 
 // Ngưỡng chống auto-text / script bơm ký tự phía server:
-// 22 ký tự/giây ~ 264 WPM (ngưỡng trần tuyệt đối cho mỗi bước nhảy ngắn).
 const MAX_CPS = 22;
-// Số ký tự tối đa có thể tăng thêm trong một khoảng rất ngắn (bù độ trễ mạng).
 const BURST_ALLOWANCE = 12;
 const DEFAULT_MAX_WPM = 130;
+// Số ký tự vector tối đa gửi trước cho client (cửa sổ trượt chống lấy toàn bộ đề)
+const GLYPH_WINDOW_AHEAD = 95;
+
+const VN_DIACRITIC_RE = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i;
 
 function randomHex(bytes) {
   return crypto.randomBytes(bytes).toString('hex');
@@ -84,8 +88,16 @@ function stdDev(arr) {
   return Math.sqrt(variance);
 }
 
+function countDiacritics(chars) {
+  let count = 0;
+  for (let i = 0; i < chars.length; i++) {
+    if (VN_DIACRITIC_RE.test(chars[i])) count++;
+  }
+  return count;
+}
+
 /**
- * Phân tích mảng nhịp gõ vật lý của người chơi để phát hiện script auto-typing ngầm.
+ * Phân tích mảng nhịp gõ vật lý của người chơi để phát hiện script auto-typing / Python bot.
  * Trả về chuỗi lý do nếu phát hiện bot, hoặc null nếu giống người thật.
  */
 function detectBotKeystrokes(keyHistory) {
@@ -98,21 +110,22 @@ function detectBotKeystrokes(keyHistory) {
   const sdDt = stdDev(dts);
   const sdDw = stdDev(dws);
   const zeroDwellCount = dws.filter((d) => d <= 2).length;
+  const ultraShortDwellCount = dws.filter((d) => d <= 12).length;
 
   // 1. Tốc độ trung bình giữa các phím quá nhanh (< 32ms/phím ~ > 31 phím/giây liên tục)
   if (avgDt < 32) {
     return 'Tốc độ phím cơ học vượt ngưỡng người thật (Auto-typer)';
   }
-  // 2. Script bắn keydown + keyup trong cùng 1 tick (dwell time ~ 0ms)
-  if (zeroDwellCount >= Math.ceil(recent.length * 0.8)) {
-    return 'Phát hiện phím bấm nhân tạo không có thời gian nhấn giữ (Script/Bot)';
+  // 2. Script JS hoặc Python pyautogui/pynput bắn keydown + keyup cực nhanh (dwell time <= 2ms hoặc <= 12ms hàng loạt)
+  if (zeroDwellCount >= Math.ceil(recent.length * 0.75) || ultraShortDwellCount >= Math.ceil(recent.length * 0.9)) {
+    return 'Phát hiện phím bấm nhân tạo từ công cụ ngoài (Python/Script có thời gian giữ phím bất thường)';
   }
   // 3. Nhịp gõ quá đều đặn do chạy vòng lặp setInterval / timer cố định
-  if (sdDt < 4.0) {
-    return 'Nhịp gõ đều đặn bất thường (nghi vấn chạy script setInterval tự động gõ)';
+  if (sdDt < 4.5) {
+    return 'Nhịp gõ đều đặn bất thường (nghi vấn chạy script tự động gõ)';
   }
   // 4. Thời gian nhấn giữ phím (dwell time) cố định nhân tạo
-  if (sdDw < 1.5) {
+  if (sdDw < 1.8) {
     return 'Thời gian giữ phím cố định bất thường (nghi vấn script tự động gõ)';
   }
   return null;
@@ -122,13 +135,29 @@ function matchesRoster(lowerName, roster) {
   if (!roster || roster.length === 0) return true;
   for (const entry of roster) {
     if (lowerName === entry) return true;
-    // Cho phép khớp nếu danh sách lớp ghi MSSV hoặc "MSSV - Họ tên"
     const parts = entry.split(/\s*[-–|:]\s*/).map((s) => s.trim()).filter(Boolean);
     if (parts.length > 1 && parts.some((pt) => pt.length >= 3 && (lowerName === pt || lowerName.includes(pt)))) {
       return true;
     }
   }
   return false;
+}
+
+/** Tạo gói Vector Glyphs cửa sổ đầu cho một đoạn văn bất kỳ (dùng cho cả Phòng thi và Tự luyện) */
+function buildInitialGlyphPack(targetChars, windowSize = GLYPH_WINDOW_AHEAD) {
+  const lines = glyphs.layoutGrid(targetChars, glyphs.COLS);
+  const spaces = [];
+  for (let i = 0; i < targetChars.length; i++) {
+    if (targetChars[i] === ' ') spaces.push(i);
+  }
+  const initEnd = Math.min(targetChars.length, windowSize);
+  return {
+    total: targetChars.length,
+    metrics: glyphs.metrics(),
+    lines,
+    spaces,
+    paths: glyphs.glyphsForRange(targetChars, 0, initEnd)
+  };
 }
 
 class Room {
@@ -197,7 +226,7 @@ class Room {
       ready: false,
       wins: 0
     };
-    resetProgress(p);
+    resetProgress(p, this.target.length);
     this.players.set(p.token, p);
     this.dirty = true;
     return { player: p };
@@ -226,18 +255,12 @@ class Room {
     this.passage = passage;
     this.passageSource = source;
     this.target = Array.from(VN.canonical(passage));
-    const lines = glyphs.layoutGrid(this.target, glyphs.COLS);
-    this.glyphPack = {
-      total: this.target.length,
-      metrics: glyphs.metrics(),
-      lines,
-      paths: glyphs.glyphsForRows(this.target, lines, 0, lines.length - 1)
-    };
+    this.glyphPack = buildInitialGlyphPack(this.target, GLYPH_WINDOW_AHEAD);
     this.state = 'countdown';
     this.startAt = now + COUNTDOWN_MS;
     this.endAt = this.startAt + this.settings.duration * 1000;
     for (const p of this.players.values()) {
-      resetProgress(p);
+      resetProgress(p, this.target.length);
       p.ready = false;
     }
     this.dirty = true;
@@ -280,6 +303,15 @@ class Room {
     return states;
   }
 
+  /** Lấy các nét vẽ bổ sung cho sinh viên khi kết nối lại giữa chừng */
+  extraGlyphsForPlayer(p) {
+    if (!p || !this.target.length) return [];
+    const needUpTo = Math.min(this.target.length, (p.typedLen || 0) + GLYPH_WINDOW_AHEAD);
+    if (needUpTo <= GLYPH_WINDOW_AHEAD) return [];
+    p.glyphSentTo = Math.max(p.glyphSentTo || GLYPH_WINDOW_AHEAD, needUpTo);
+    return glyphs.glyphsForRange(this.target, GLYPH_WINDOW_AHEAD, needUpTo);
+  }
+
   _recordCheat(p, elapsedMs, reason, weight = 25) {
     p.cheatFlags++;
     p.lastCheatReason = reason;
@@ -291,7 +323,7 @@ class Room {
 
   /**
    * Nhận văn bản người chơi đã gõ, kiểm tra chống gian lận và chấm điểm phía server.
-   * meta: { untrusted?: boolean, reason?: string, keys?: Array<{dt:number, dw:number, bs?:number}> }
+   * meta: { untrusted?: boolean, reason?: string, keys?: Array<{dt:number, dw:number, bs?:number, u?:number}> }
    */
   progress(token, typedRaw, now = Date.now(), meta) {
     const p = this.players.get(token);
@@ -395,7 +427,7 @@ class Room {
     if (deltaChars > 0) p.lastPacketAt = now;
     if (deltaChars < 0) p.backspaces += Math.abs(deltaChars);
 
-    // --- 3. Kiểm tra sinh trắc học nhịp gõ vật lý (khi client gửi kèm telemetry `keys`) ---
+    // --- 3. Kiểm tra sinh trắc học nhịp gõ vật lý & Chống Python Auto-typer ---
     if (meta && Array.isArray(meta.keys)) {
       const validKeys = meta.keys
         .slice(0, 120)
@@ -405,7 +437,6 @@ class Room {
         if (k.bs) p.backspaces++;
       }
 
-      // Nếu văn bản tăng thêm >= 6 ký tự nhưng tổng số phím vật lý gửi lên quá ít -> bơm gói tin trực tiếp qua Socket
       const nextKeyCount = p.keyCount + validKeys.length;
       if (deltaChars > 0 && typed.length >= 6 && nextKeyCount < Math.floor(typed.length * 0.6)) {
         this._recordCheat(
@@ -422,6 +453,29 @@ class Room {
           revertTo: p.typed,
           charStates: this.computeCharStates(Array.from(p.typed))
         };
+      }
+
+      // Kiểm tra tỷ lệ phím dấu tiếng Việt chống Python (pynput/pyautogui/keyboard) bơm chữ Unicode có sẵn dấu:
+      // Người thật gõ câu tiếng Việt có dấu luôn phải bấm số phím > độ dài chuỗi (do phải gõ phím dấu hoặc Unikey).
+      if (deltaChars > 0 && typed.length >= 16) {
+        const diacritics = countDiacritics(typed);
+        const minExpectedKeys = typed.length + Math.max(1, Math.floor(diacritics * 0.45));
+        if (diacritics >= 4 && nextKeyCount < minExpectedKeys) {
+          this._recordCheat(
+            p,
+            elapsed,
+            'Phát hiện công cụ ngoài (Python/Auto-typer) bơm trực tiếp ký tự tiếng Việt có sẵn dấu',
+            40
+          );
+          this.dirty = true;
+          return {
+            player: p,
+            rejected: true,
+            reason: p.lastCheatReason,
+            revertTo: p.typed,
+            charStates: this.computeCharStates(Array.from(p.typed))
+          };
+        }
       }
 
       const candidateHistory = p.keyHistory.concat(validKeys).slice(-60);
@@ -467,9 +521,9 @@ class Room {
     // Ghi nhận điểm nghi vấn nếu gõ rất dài tốc độ cao mà không hề xoá/sửa lỗi lần nào
     const minutes = Math.max(0.02, elapsed / 60000);
     const liveWpm = Math.round(p.correct / 5 / minutes);
-    if (!p.zeroBsFlagged && p.typedLen >= 140 && liveWpm >= 95 && p.backspaces === 0 && p.mistakes === 0) {
+    if (!p.zeroBsFlagged && p.typedLen >= 120 && liveWpm >= 85 && p.backspaces === 0 && p.mistakes === 0) {
       p.zeroBsFlagged = true;
-      p.suspicionScore = Math.min(100, (p.suspicionScore || 0) + 25);
+      p.suspicionScore = Math.min(100, (p.suspicionScore || 0) + 30);
       p.cheatLog.push({
         tSec: Math.round(elapsed / 100) / 10,
         reason: `Gõ ${p.typedLen} ký tự ở tốc độ cao (${liveWpm} WPM) nhưng 0 lần bấm Backspace và 0 lỗi`
@@ -494,12 +548,21 @@ class Room {
       }
     }
 
+    // Cấp tiếp các nét vẽ (Vector Glyphs) theo cửa sổ trượt khi sinh viên gõ tiến lên
+    let nextGlyphs = null;
+    const needUpTo = Math.min(target.length, typed.length + GLYPH_WINDOW_AHEAD);
+    if (needUpTo > (p.glyphSentTo || 0)) {
+      nextGlyphs = glyphs.glyphsForRange(target, p.glyphSentTo || 0, needUpTo);
+      p.glyphSentTo = needUpTo;
+    }
+
     this.dirty = true;
     this.touch();
     return {
       player: p,
       rejected: false,
       charStates: this.computeCharStates(typed),
+      nextGlyphs,
       correct: p.correct,
       mistakes: p.mistakes
     };
@@ -603,7 +666,7 @@ class Room {
   /**
    * Trạng thái phòng gửi cho SINH VIÊN:
    * - Tuyệt đối KHÔNG gửi `passage` dạng chữ (plaintext).
-   * - Chỉ gửi `glyphs` (vector paths) khi vòng thi đã thực sự `running` hoặc `finished` (không gửi lúc countdown).
+   * - `glyphs` chỉ chứa cửa sổ `GLYPH_WINDOW_AHEAD` ký tự đầu tiên, phần còn lại truyền dần khi gõ.
    */
   snapshot(now = Date.now()) {
     const showGlyphs = this.state !== 'lobby';
@@ -640,7 +703,7 @@ class Room {
   }
 }
 
-function resetProgress(p) {
+function resetProgress(p, totalLen = 0) {
   p.typed = '';
   p.correct = 0;
   p.typedLen = 0;
@@ -662,6 +725,7 @@ function resetProgress(p) {
   p.zeroBsFlagged = false;
   p.lastTimelineMs = 0;
   p.timeline = [];
+  p.glyphSentTo = Math.min(totalLen || 0, GLYPH_WINDOW_AHEAD);
 }
 
 class RoomManager {
@@ -708,10 +772,12 @@ module.exports = {
   sanitizeName,
   sanitizeSettings,
   detectBotKeystrokes,
+  buildInitialGlyphPack,
   COUNTDOWN_MS,
   GRACE_MS,
   DURATIONS,
   MAX_CPS,
   BURST_ALLOWANCE,
-  DEFAULT_MAX_WPM
+  DEFAULT_MAX_WPM,
+  GLYPH_WINDOW_AHEAD
 };

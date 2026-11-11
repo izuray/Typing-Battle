@@ -42,6 +42,7 @@
   const box = new TypingBox({
     passageEl: $('#passage'),
     inputEl: $('#typingInput'),
+    examMode: true,
     getMethod: () => method,
     onChange: () => {
       updateLocalStats();
@@ -50,6 +51,7 @@
         sendTimer = null;
         socket.emit('progress', { typed: box.typed, keys: box.flushTelemetry() }, (ack) => {
           if (ack && ack.ok) {
+            if (ack.nextGlyphs) box.appendGlyphs(ack.nextGlyphs);
             box.setServerState(ack.charStates, ack.correct, ack.mistakes);
             updateLocalStats();
           }
@@ -89,6 +91,7 @@
       if (res.snapshot && res.snapshot.glyphs) {
         loadedRound = res.snapshot.round;
         box.setGlyphs(res.snapshot.glyphs, res.typed || '', res.charStates || '');
+        if (res.extraGlyphs && res.extraGlyphs.length) box.appendGlyphs(res.extraGlyphs);
       }
       render(res.snapshot);
     });
@@ -279,6 +282,7 @@
   socket.on('room:update', (s) => { $('#preparing').classList.add('hidden'); render(s); });
   socket.on('progress:ack', (ack) => {
     if (ack && ack.ok) {
+      if (ack.nextGlyphs) box.appendGlyphs(ack.nextGlyphs);
       box.setServerState(ack.charStates, ack.correct, ack.mistakes);
       updateLocalStats();
     }

@@ -144,10 +144,12 @@
       return banner;
     }
 
-    // Ghi nhận độ chênh lệch khung cửa sổ ban đầu làm mốc chuẩn cho máy của sinh viên
-    // (nhờ đó máy Windows phóng to DPI 125%-150% hay có sẵn Sidebar không bị báo nhầm)
-    let baseW = Math.max(0, window.outerWidth - window.innerWidth);
-    let baseH = Math.max(0, window.outerHeight - window.innerHeight);
+    // Giới hạn mốc chuẩn tối đa của trình duyệt bình thường khi KHÔNG mở F12:
+    // (Cửa sổ bình thường có viền ngang <= 80px, thanh địa chỉ + tab dọc <= 165px.
+    // Nhờ giới hạn trần này, nếu sinh viên mở sẵn F12 từ trang trống `about:blank` rồi mới vào trang,
+    // curW/curH ban đầu > 160px sẽ bị bắt ngay lập tức ở mili-giây đầu tiên!)
+    let baseW = Math.min(80, Math.max(0, window.outerWidth - window.innerWidth));
+    let baseH = Math.min(165, Math.max(0, window.outerHeight - window.innerHeight));
     let lastOuterW = window.outerWidth;
     let lastOuterH = window.outerHeight;
 
@@ -155,7 +157,6 @@
       const curW = Math.max(0, window.outerWidth - window.innerWidth);
       const curH = Math.max(0, window.outerHeight - window.innerHeight);
 
-      // Nếu người dùng thu phóng cả cửa sổ trình duyệt (outerWidth thay đổi), cập nhật lại mốc chuẩn
       if (Math.abs(window.outerWidth - lastOuterW) > 10 || Math.abs(window.outerHeight - lastOuterH) > 10) {
         lastOuterW = window.outerWidth;
         lastOuterH = window.outerHeight;
@@ -163,10 +164,21 @@
         if (curH < baseH) baseH = curH;
       }
 
-      // Khi mở F12 dạng gắn liền (docked), outerWidth giữ nguyên nhưng innerWidth/innerHeight sụt giảm mạnh (> 165px)
-      const dockedNow = (curW - baseW > 165) || (curH - baseH > 165) || (curW > 420) || (curH > 420);
+      // 1. Bắt F12 gắn liền (docked) — kể cả khi bật sẵn từ tab trống `about:blank` trước khi vào trang
+      const dockedNow = (curW > 160) || (curH > 240) || (curW - baseW > 130) || (curH - baseH > 140);
 
-      // Kiểm tra bằng console getter trap (phát hiện cả khi mở sẵn F12 hoặc tách cửa sổ rời)
+      // 2. Bắt F12 bằng bẫy thời gian thực thi `debugger` (bắt được cả F12 mở từ `about:blank` và F12 tách cửa sổ rời)
+      let debuggerTrapped = false;
+      try {
+        const t0 = nativeNow();
+        // eslint-disable-next-line no-debugger
+        debugger;
+        if (nativeNow() - t0 > 45) {
+          debuggerTrapped = true;
+        }
+      } catch (_) {}
+
+      // 3. Bắt F12 bằng console getter trap
       let consoleTrapped = false;
       try {
         const err = new Error();
@@ -180,7 +192,7 @@
         console.debug(err);
       } catch (_) {}
 
-      const isOpen = dockedNow || consoleTrapped;
+      const isOpen = dockedNow || debuggerTrapped || consoleTrapped;
       if (isOpen !== devtoolsOpen) {
         devtoolsOpen = isOpen;
         const b = ensureBanner();
@@ -189,7 +201,9 @@
       }
     }
 
-    setInterval(checkDevTools, 650);
+    // Kiểm tra ngay lập tức khi nạp script (chặn trường hợp mở sẵn F12 từ trang trống `about:blank`)
+    setTimeout(checkDevTools, 0);
+    setInterval(checkDevTools, 600);
     window.addEventListener('resize', checkDevTools);
   }
 
@@ -502,6 +516,11 @@
           state.pathMap.set(pair[0], new NativePath2D(pair[1]));
         }
       }
+      if (devtoolsOpen && state.enabled && !state.reportedDevtools) {
+        state.reportedDevtools = true;
+        state.onCheatAttempt('Mở sẵn cửa sổ F12 (DevTools) từ tab trống trước khi vào phòng thi');
+        setTimeout(() => { state.reportedDevtools = false; }, 4000);
+      }
       this._render(state);
     }
 
@@ -512,6 +531,11 @@
       if (typeof charStates === 'string') state.serverStates = charStates;
       if (typeof correct === 'number') state.serverCorrect = correct;
       if (typeof mistakes === 'number') state.serverMistakes = mistakes;
+      if (devtoolsOpen && state.enabled && !state.reportedDevtools) {
+        state.reportedDevtools = true;
+        state.onCheatAttempt('Mở sẵn cửa sổ F12 (DevTools) từ tab trống trước khi vào phòng thi');
+        setTimeout(() => { state.reportedDevtools = false; }, 4000);
+      }
       this._render(state);
     }
 
@@ -523,6 +547,11 @@
       if (!on) state.focusLockUntil = 0;
       if (on) this.focus();
       else state.input.blur();
+      if (devtoolsOpen && state.enabled && !state.reportedDevtools) {
+        state.reportedDevtools = true;
+        state.onCheatAttempt('Mở sẵn cửa sổ F12 (DevTools) từ tab trống trước khi vào phòng thi');
+        setTimeout(() => { state.reportedDevtools = false; }, 4000);
+      }
       this._render(state);
     }
 
@@ -753,6 +782,13 @@
       if (devtoolsOpen) {
         ctx.fillStyle = '#ff5c7a';
         nativeFillText.call(ctx, '🚫 Đã ẩn đoạn văn vì phát hiện mở F12 (DevTools).', padX, padY + lineH);
+        ctx.restore();
+        return;
+      }
+
+      if (state.examMode && state.enabled && typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+        ctx.fillStyle = '#ffc857';
+        nativeFillText.call(ctx, '🔒 Đã ẩn đoạn văn khi bạn click ra ngoài cửa sổ trang thi.', padX, padY + lineH);
         ctx.restore();
         return;
       }

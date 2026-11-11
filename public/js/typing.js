@@ -1,22 +1,21 @@
 /*
- * typing.js - Hiển thị đoạn văn trên <canvas> (chống đọc DOM) + Ô gõ chống script/auto-typer.
+ * typing.js - Hiển thị đoạn văn trên <canvas> (chống đọc DOM) + Chặn F12/DevTools + Chống Auto-typer.
  *
- * Các lớp bảo vệ chống chạy JS ngầm / Extension / Auto-typer:
- *  1. Lưu giữ các hàm native C++ của trình duyệt ngay khi nạp file (Event.prototype.isTrusted,
- *     HTMLTextAreaElement.prototype.value, performance.now) để chống monkey-patching.
- *  2. Vẽ đoạn văn mẫu lên <canvas> thay vì DOM text -> document.querySelector('#passage').innerText
- *     hoặc các extension quét DOM chỉ nhận về chuỗi rỗng "".
- *  3. Toàn bộ dữ liệu nhạy cảm (target, typed, keyBuffer) nằm trong WeakMap nội bộ (private state),
- *     không gắn vào thuộc tính của instance `this` -> mở Console gõ `box.target` là undefined.
- *  4. Khoá thuộc tính `.value` trên phần tử `#typingInput`: bất kỳ đoạn JS nào chạy
- *     `document.getElementById('typingInput').value = '...'` từ bên ngoài đều bị chặn và báo cáo gian lận.
- *  5. Thu thập sinh trắc học nhịp gõ vật lý (flight time `dt` & dwell time `dw` từ keydown -> keyup)
- *     gửi lên server để server phát hiện bot `setInterval` / auto-typer.
+ * Các lớp bảo vệ chống F12 / DOM / JS ngầm / Extension:
+ *  1. Lưu toàn bộ hàm Native C++ ngay khi trang nạp (Event.prototype.isTrusted,
+ *     HTMLTextAreaElement.prototype.value, CanvasRenderingContext2D.prototype.fillText/measureText)
+ *     -> Sinh viên mở F12 Console ghi đè prototype để bắt chữ cũng hoàn toàn vô tác dụng.
+ *  2. Vẽ đoạn văn mẫu lên <canvas> -> Mở F12 tab Elements soi DOM hoàn toàn KHÔNG có chữ nào.
+ *  3. Chặn phím tắt F12, Ctrl+Shift+I/J/C/K, Ctrl+U, Ctrl+S và chuột phải trên toàn trang.
+ *  4. Phát hiện mở cửa sổ F12 (DevTools Detector) theo thời gian thực:
+ *     Ngay khi mở F12 -> xoá trắng Canvas, khoá ô gõ, hiện màn hình cảnh báo đỏ toàn trang
+ *     và gửi cờ gian lận "Mở F12 (DevTools)" về bảng xếp hạng của giảng viên.
+ *  5. Khoá setter .value của ô gõ và thu thập sinh trắc học nhịp phím (dt, dw) gửi lên server.
  */
 (function () {
   'use strict';
 
-  // --- 1. Lưu tham chiếu Native C++ ngay từ đầu (trước khi user kịp chạy script trong Console) ---
+  // --- 1. Lưu giữ các hàm Native C++ ngay từ dòng đầu tiên ---
   const nativeIsTrustedGetter = (function () {
     try {
       const desc = Object.getOwnPropertyDescriptor(Event.prototype, 'isTrusted');
@@ -35,6 +34,19 @@
     }
   })();
 
+  const nativeFillText = (typeof CanvasRenderingContext2D !== 'undefined')
+    ? CanvasRenderingContext2D.prototype.fillText
+    : null;
+  const nativeMeasureText = (typeof CanvasRenderingContext2D !== 'undefined')
+    ? CanvasRenderingContext2D.prototype.measureText
+    : null;
+  const nativeFillRect = (typeof CanvasRenderingContext2D !== 'undefined')
+    ? CanvasRenderingContext2D.prototype.fillRect
+    : null;
+  const nativeClearRect = (typeof CanvasRenderingContext2D !== 'undefined')
+    ? CanvasRenderingContext2D.prototype.clearRect
+    : null;
+
   const nativeNow = (typeof performance !== 'undefined' && performance.now)
     ? performance.now.bind(performance)
     : Date.now.bind(Date);
@@ -43,7 +55,6 @@
 
   function isGenuineTrustedEvent(e) {
     if (!e || typeof e !== 'object') return false;
-    // Nếu script cố tình Object.defineProperty(e, 'isTrusted', { value: true }) trên chính instance e:
     if (hasOwn.call(e, 'isTrusted')) return false;
     if (nativeIsTrustedGetter) {
       try {
@@ -55,8 +66,98 @@
     return e.isTrusted === true;
   }
 
+  // --- 2. Chặn phím tắt F12 / DevTools / View Source & Phát hiện mở F12 ---
+  let devtoolsOpen = false;
+  const devtoolsListeners = new Set();
+
+  function setupAntiDevTools() {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+    // Chặn chuột phải toàn trang
+    window.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+    }, true);
+
+    // Chặn F12, Ctrl+Shift+I/J/C/K, Ctrl+U, Ctrl+S
+    window.addEventListener('keydown', (e) => {
+      const key = (e.key || '').toUpperCase();
+      const ctrlOrMeta = e.ctrlKey || e.metaKey;
+      const blocked =
+        e.key === 'F12' ||
+        e.keyCode === 123 ||
+        (ctrlOrMeta && e.shiftKey && ['I', 'J', 'C', 'K'].includes(key)) ||
+        (ctrlOrMeta && ['U', 'S'].includes(key));
+      if (blocked) {
+        e.preventDefault();
+        e.stopPropagation();
+        devtoolsListeners.forEach((fn) => fn('Bấm phím tắt mở F12/DevTools', false));
+        if (typeof TB !== 'undefined' && TB.toast) {
+          TB.toast('🚫 Không được sử dụng công cụ F12 (DevTools) trong phòng thi!', true);
+        }
+        return false;
+      }
+    }, true);
+
+    // Tạo lớp phủ cảnh báo khi phát hiện đang mở F12
+    let banner = null;
+    function ensureBanner() {
+      if (banner) return banner;
+      banner = document.createElement('div');
+      banner.className = 'overlay hidden';
+      banner.style.zIndex = '9999';
+      banner.style.background = 'rgba(20, 6, 14, 0.96)';
+      banner.style.padding = '24px';
+      banner.style.textAlign = 'center';
+      banner.innerHTML =
+        '<div style="font-size:4rem">🚫</div>' +
+        '<h2 style="color:#ff5c7a;font-size:1.8rem;margin:8px 0">PHÁT HIỆN ĐANG MỞ F12 (DEVTOOLS)!</h2>' +
+        '<p style="max-width:520px;color:#e8eaf6">Đoạn văn và ô gõ đã bị khoá tạm thời để chống gian lận. ' +
+        'Vui lòng <b>đóng cửa sổ F12 (DevTools)</b> ngay lập tức để tiếp tục làm bài.<br>' +
+        '<span class="small muted">Hệ thống đã gửi cảnh báo tới màn hình của giảng viên.</span></p>';
+      document.body.appendChild(banner);
+      return banner;
+    }
+
+    function checkDevTools() {
+      // Kiểm tra chênh lệch kích thước khi dock F12 bên phải/trái/dưới
+      const zoom = window.devicePixelRatio || 1;
+      const widthDiff = window.outerWidth - window.innerWidth * zoom;
+      const heightDiff = window.outerHeight - window.innerHeight * zoom;
+      const sizeDocked = (window.outerWidth > 0 && widthDiff > 220) ||
+                         (window.outerHeight > 0 && heightDiff > 220);
+
+      // Kiểm tra bằng console getter trap (phát hiện cả khi F12 mở thành cửa sổ rời)
+      let consoleTrapped = false;
+      try {
+        const probe = new Image();
+        Object.defineProperty(probe, 'id', {
+          get: function () {
+            consoleTrapped = true;
+            return '';
+          }
+        });
+        // Khi Console đang mở, trình duyệt đọc thuộc tính .id để preview phần tử
+        console.debug(probe);
+        if (console.clear) console.clear();
+      } catch (_) {}
+
+      const isOpen = sizeDocked || consoleTrapped;
+      if (isOpen !== devtoolsOpen) {
+        devtoolsOpen = isOpen;
+        const b = ensureBanner();
+        b.classList.toggle('hidden', !isOpen);
+        devtoolsListeners.forEach((fn) => fn('Mở cửa sổ F12 (DevTools)', isOpen));
+      }
+    }
+
+    setInterval(checkDevTools, 600);
+    window.addEventListener('resize', checkDevTools);
+  }
+
+  setupAntiDevTools();
+
   const MAX_SINGLE_INPUT_CHARS = 3;
-  const PRIV = new WeakMap(); // lưu trạng thái kín hoàn toàn khỏi Console
+  const PRIV = new WeakMap();
 
   class TypingBox {
     constructor(opts) {
@@ -71,16 +172,27 @@
         typedArr: [],
         enabled: false,
         lastKeyDownAt: 0,
-        downMap: new Map(), // code -> timestamp
-        telemetry: [],      // [{ dt, dw, k }] gửi kèm gói tin progress lên server
+        downMap: new Map(),
+        telemetry: [],
         canvas: null,
         ctx: null,
-        scrollY: 0
+        scrollY: 0,
+        reportedDevtools: false
       };
       PRIV.set(this, state);
       this._initCanvas(state);
       this._lockInputElement(state);
       this._bindEvents(state);
+
+      devtoolsListeners.add((reason, isOpen) => {
+        this._render(state);
+        if (state.enabled && !state.reportedDevtools) {
+          state.reportedDevtools = true;
+          state.onCheatAttempt(reason);
+          setTimeout(() => { state.reportedDevtools = false; }, 4000);
+        }
+        if (!isOpen && state.enabled) this.focus();
+      });
     }
 
     _getInputValue(state) {
@@ -102,7 +214,6 @@
     _lockInputElement(state) {
       if (!nativeValueDesc || typeof document === 'undefined') return;
       try {
-        const self = this;
         Object.defineProperty(state.input, 'value', {
           configurable: false,
           enumerable: true,
@@ -110,7 +221,6 @@
             return nativeValueDesc.get.call(state.input);
           },
           set: function (_externalVal) {
-            // Bất kỳ đoạn JS nào gọi element.value = ... từ bên ngoài đều đi vào đây!
             state.onCheatAttempt('Phát hiện script can thiệp trực tiếp vào ô gõ (.value)');
             if (typeof TB !== 'undefined' && TB.toast) {
               TB.toast('⚠️ Phát hiện can thiệp bằng mã JavaScript!', true);
@@ -118,14 +228,14 @@
             return nativeValueDesc.get.call(state.input);
           }
         });
-        void self;
       } catch (_) {}
     }
 
-    /** Khởi tạo Canvas hiển thị đoạn văn mẫu (chống đọc text từ DOM) */
+    /** Khởi tạo Canvas hiển thị đoạn văn mẫu (chống đọc text từ DOM F12) */
     _initCanvas(state) {
       if (typeof document === 'undefined' || !state.passageEl) return;
       state.passageEl.innerHTML = '';
+      state.passageEl.removeAttribute('aria-label');
       const canvas = document.createElement('canvas');
       canvas.style.width = '100%';
       canvas.style.height = '100%';
@@ -173,7 +283,7 @@
       input.addEventListener('contextmenu', (e) => e.preventDefault());
 
       input.addEventListener('beforeinput', (e) => {
-        if (!state.enabled) { e.preventDefault(); return; }
+        if (!state.enabled || devtoolsOpen) { e.preventDefault(); return; }
         if (!isGenuineTrustedEvent(e)) {
           e.preventDefault();
           state.onCheatAttempt('Phát hiện sự kiện beforeinput giả lập (JS/Extension)');
@@ -245,6 +355,7 @@
       state.input.disabled = !on;
       if (on) this.focus();
       else state.input.blur();
+      this._render(state);
     }
 
     get enabled() {
@@ -257,7 +368,6 @@
       return state ? state.typed : '';
     }
 
-    /** Lấy và xoá hàng đợi telemetry nhịp gõ vật lý để gửi kèm gói tin progress */
     flushTelemetry() {
       const state = PRIV.get(this);
       if (!state) return [];
@@ -275,7 +385,7 @@
     }
 
     _onKeyUp(state, e) {
-      if (!state.enabled) return;
+      if (!state.enabled || devtoolsOpen) return;
       if (!isGenuineTrustedEvent(e)) {
         state.onCheatAttempt('Phát hiện sự kiện keyup giả lập (auto-typer)');
         return;
@@ -297,7 +407,7 @@
     }
 
     _onKeyDown(state, e) {
-      if (!state.enabled) { e.preventDefault(); return; }
+      if (!state.enabled || devtoolsOpen) { e.preventDefault(); return; }
       if (!isGenuineTrustedEvent(e)) {
         e.preventDefault();
         state.onCheatAttempt('Phát hiện phím bấm giả lập bằng JavaScript (isTrusted=false)');
@@ -323,7 +433,6 @@
         return;
       }
 
-      // Ghi nhận nhịp gõ cho mọi phím ký tự hoặc Backspace
       if (e.key === 'Backspace' || (e.key && e.key.length === 1) || e.isComposing || e.key === 'Process') {
         this._recordKeyDown(state, e);
       }
@@ -352,14 +461,12 @@
     }
 
     _onInput(state, e) {
-      if (!state.enabled) { this._setInputValue(state, state.typed); return; }
+      if (!state.enabled || devtoolsOpen) { this._setInputValue(state, state.typed); return; }
       if (!isGenuineTrustedEvent(e)) {
         this._setInputValue(state, state.typed);
         state.onCheatAttempt('Phát hiện sự kiện input giả lập từ script/extension');
         return;
       }
-      // Ở chế độ Telex/VNI trên máy tính, mọi phím hợp lệ đã được xử lý trong _onKeyDown.
-      // Nếu không có phím vật lý nào vừa nhấn trong 500ms qua mà lại phát sinh input -> script can thiệp!
       const sinceKey = nativeNow() - state.lastKeyDownAt;
       if (sinceKey > 800 && state.lastKeyDownAt > 0) {
         this._setInputValue(state, state.typed);
@@ -378,7 +485,6 @@
         return;
       }
       if (delta > 0 && state.telemetry.length === 0 && state.downMap.size === 0) {
-        // Trường hợp gõ trên bàn phím ảo điện thoại không gửi keyup chuẩn: ghi nhận nhịp từ input
         state.telemetry.push({ dt: Math.min(2000, Math.max(20, Math.round(sinceKey || 95))), dw: 65, bs: 0 });
       }
       this.setTyped(raw);
@@ -408,11 +514,11 @@
       if (!silent) state.onChange(state.typed);
     }
 
-    /** Vẽ đoạn văn mẫu lên <canvas> với màu sắc đúng/sai từng ký tự và tự động cuộn dòng */
+    /** Vẽ đoạn văn mẫu bằng các hàm Canvas native C++ đã lưu (chống hook fillText) */
     _render(state) {
       const canvas = state.canvas;
       const ctx = state.ctx;
-      if (!canvas || !ctx) return;
+      if (!canvas || !ctx || !nativeFillText || !nativeMeasureText) return;
 
       const rect = state.passageEl.getBoundingClientRect();
       const width = Math.max(300, Math.floor(rect.width || 680));
@@ -424,7 +530,7 @@
       }
       ctx.save();
       ctx.scale(dpr, dpr);
-      ctx.clearRect(0, 0, width, height);
+      nativeClearRect.call(ctx, 0, 0, width, height);
 
       const fontSize = 21;
       const lineH = 34;
@@ -433,13 +539,20 @@
       ctx.font = '600 ' + fontSize + 'px "JetBrains Mono", "Cascadia Code", Consolas, monospace';
       ctx.textBaseline = 'top';
 
+      // Nếu đang mở F12 -> không vẽ bất kỳ chữ nào lên Canvas
+      if (devtoolsOpen) {
+        ctx.fillStyle = '#ff5c7a';
+        nativeFillText.call(ctx, '🚫 Đã ẩn đoạn văn vì phát hiện mở F12 (DevTools).', padX, padY + lineH);
+        ctx.restore();
+        return;
+      }
+
       const target = state.target;
       const typed = Array.from(VN.canonical(state.typed));
       const len = typed.length;
       const complete = len >= target.length;
       const wordStart = complete ? len : typed.lastIndexOf(' ') + 1;
 
-      // Tính toạ độ (x, y) của từng ký tự có ngắt dòng theo từ (word-wrap)
       const maxX = width - padX;
       const pos = new Array(target.length);
       let x = padX;
@@ -447,7 +560,7 @@
       let i = 0;
       while (i < target.length) {
         if (target[i] === ' ') {
-          const w = ctx.measureText(' ').width;
+          const w = nativeMeasureText.call(ctx, ' ').width;
           if (x + w > maxX) { x = padX; y += lineH; }
           pos[i] = { x, y, w };
           x += w;
@@ -457,7 +570,7 @@
           let wordW = 0;
           const charWidths = [];
           while (j < target.length && target[j] !== ' ') {
-            const cw = ctx.measureText(target[j]).width;
+            const cw = nativeMeasureText.call(ctx, target[j]).width;
             charWidths.push(cw);
             wordW += cw;
             j++;
@@ -476,13 +589,10 @@
         }
       }
 
-      // Tự động cuộn theo dòng của con trỏ hiện tại
       const caretIdx = Math.min(len, Math.max(0, target.length - 1));
       const caretPos = pos[caretIdx] || { x: padX, y: padY };
-      const desiredScroll = Math.max(0, caretPos.y - padY - lineH);
-      state.scrollY = desiredScroll;
+      state.scrollY = Math.max(0, caretPos.y - padY - lineH);
 
-      // Vẽ từng ký tự trong vùng nhìn thấy
       for (let idx = 0; idx < target.length; idx++) {
         const p = pos[idx];
         const drawY = p.y - state.scrollY;
@@ -496,19 +606,19 @@
             ctx.fillStyle = '#ffc857';
           } else {
             ctx.fillStyle = 'rgba(255, 92, 122, 0.85)';
-            ctx.fillRect(p.x - 1, drawY - 2, p.w + 2, fontSize + 6);
+            nativeFillRect.call(ctx, p.x - 1, drawY - 2, p.w + 2, fontSize + 6);
             ctx.fillStyle = '#ffffff';
           }
         } else if (idx === len) {
           ctx.fillStyle = 'rgba(108, 123, 255, 0.28)';
-          ctx.fillRect(p.x - 1, drawY - 2, p.w + 2, fontSize + 6);
+          nativeFillRect.call(ctx, p.x - 1, drawY - 2, p.w + 2, fontSize + 6);
           ctx.fillStyle = '#ffc857';
-          ctx.fillRect(p.x - 1, drawY - 2, 2.5, fontSize + 6);
+          nativeFillRect.call(ctx, p.x - 1, drawY - 2, 2.5, fontSize + 6);
           ctx.fillStyle = '#ffffff';
         } else {
           ctx.fillStyle = '#7e86b8';
         }
-        ctx.fillText(ch, p.x, drawY);
+        nativeFillText.call(ctx, ch, p.x, drawY);
       }
 
       ctx.restore();

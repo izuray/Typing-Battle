@@ -59,9 +59,12 @@ app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'], etag: false, lastModified: false, maxAge: 0 }));
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 app.get('/api/config', (_req, res) => res.json({ aiAvailable: aiAvailable() }));
 

@@ -38,7 +38,7 @@
   let clock = null;
   let sendTimer = null;
 
-  // ---------- typing box (đoạn văn vẽ trên Canvas ở trên + ô gõ khoá .value ở dưới) ----------
+  // ---------- typing box (đoạn văn Vector Glyphs trên Canvas ở trên + ô gõ khoá .value ở dưới) ----------
   const box = new TypingBox({
     passageEl: $('#passage'),
     inputEl: $('#typingInput'),
@@ -48,8 +48,13 @@
       if (sendTimer) return;
       sendTimer = setTimeout(() => {
         sendTimer = null;
-        socket.emit('progress', { typed: box.typed, keys: box.flushTelemetry() });
-      }, 80);
+        socket.emit('progress', { typed: box.typed, keys: box.flushTelemetry() }, (ack) => {
+          if (ack && ack.ok) {
+            box.setServerState(ack.charStates, ack.correct, ack.mistakes);
+            updateLocalStats();
+          }
+        });
+      }, 65);
     },
     onCheatAttempt: (reason) => {
       socket.emit('progress', { typed: box.typed, untrusted: true, reason });
@@ -81,9 +86,9 @@
       }
       me = { id: res.id, token: res.token, name: res.name };
       saveSession();
-      if (res.snapshot.passage && res.typed) {
+      if (res.snapshot && res.snapshot.glyphs) {
         loadedRound = res.snapshot.round;
-        box.setPassage(res.snapshot.passage, res.typed);
+        box.setGlyphs(res.snapshot.glyphs, res.typed || '', res.charStates || '');
       }
       render(res.snapshot);
     });
@@ -96,6 +101,7 @@
 
     if (s.state === 'lobby') {
       $('#countdownOverlay').classList.add('hidden');
+      loadedRound = 0;
       box.enable(false);
       showOnly('viewLobby');
       $('#lobbyModeLabel').textContent = isDuel ? '⚔️ Phòng thi Battle 1 vs 1' : '🏫 Phòng thi cả lớp';
@@ -116,9 +122,13 @@
       $('#gameLayout').className = 'layout-side';
       $('#srcLabel').textContent = SOURCE_LABEL[s.passageSource] || '';
 
-      if (loadedRound !== s.round && s.passage) {
+      if (s.state === 'countdown') {
+        if (loadedRound !== s.round) {
+          box.setGlyphs(null, '', '');
+        }
+      } else if (s.glyphs && loadedRound !== s.round) {
         loadedRound = s.round;
-        box.setPassage(s.passage, '');
+        box.setGlyphs(s.glyphs, '', '');
       }
       const running = s.state === 'running';
       box.enable(running);
@@ -271,6 +281,12 @@
   });
   socket.on('room:preparing', () => $('#preparing').classList.remove('hidden'));
   socket.on('room:update', (s) => { $('#preparing').classList.add('hidden'); render(s); });
+  socket.on('progress:ack', (ack) => {
+    if (ack && ack.ok) {
+      box.setServerState(ack.charStates, ack.correct, ack.mistakes);
+      updateLocalStats();
+    }
+  });
   socket.on('standings', (d) => {
     if (!snap) return;
     snap.standings = d.standings;
@@ -278,6 +294,9 @@
     else if (snap.state === 'running' || snap.state === 'countdown') renderStandings(d.standings);
   });
   socket.on('cheat:rejected', (d) => {
+    if (d && typeof d.charStates === 'string') {
+      box.setServerState(d.charStates, undefined, undefined);
+    }
     if (d && typeof d.revertTo === 'string') box.setTyped(d.revertTo, true);
     toast('⚠️ ' + ((d && d.reason) || 'Thao tác không hợp lệ!'), true);
   });

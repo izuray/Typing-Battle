@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Giảng viên - Typing Battle</title>
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/style.css?v=4">
 </head>
 <body>
   <header class="topbar">
@@ -59,6 +59,15 @@
               <option value="custom">Tự nhập đoạn văn</option>
             </select>
           </div>
+          <div class="grow">
+            <label title="Ngưỡng WPM tối đa chống bot/script">Trần tốc độ (Chống Bot)</label>
+            <select data-k="maxWpm">
+              <option value="100">Tối đa 100 WPM (Chặt)</option>
+              <option value="130" selected>Tối đa 130 WPM (Chuẩn)</option>
+              <option value="160">Tối đa 160 WPM (Mở rộng)</option>
+              <option value="200">Tối đa 200 WPM (Chuyên nghiệp)</option>
+            </select>
+          </div>
         </div>
         <div data-show="ai">
           <label>Chủ đề cho AI (tuỳ chọn)</label>
@@ -70,11 +79,15 @@
           <textarea data-k="customText" maxlength="5000" placeholder="Dán đoạn văn tiếng Việt vào đây..."></textarea>
           <p class="small muted">Nếu sinh viên gõ hết đoạn văn trước khi hết giờ thì sẽ được tính là hoàn thành.</p>
         </div>
+        <div>
+          <label>Danh sách lớp / Mã SV được phép vào phòng (tuỳ chọn — bỏ trống nếu cho phép tự do)</label>
+          <textarea data-k="rosterText" rows="2" maxlength="8000" placeholder="Mỗi dòng hoặc cách nhau dấu phẩy (VD: B21DCCN001 - Nguyễn Văn A, B21DCCN002)..."></textarea>
+        </div>
       </div>
     </template>
 
     <!-- Bước 1: Chọn loại phòng (Lớp học hoặc Battle 1v1) & Tạo phòng -->
-    <section id="viewCreate" class="card hidden" style="max-width:660px;margin:0 auto">
+    <section id="viewCreate" class="card hidden" style="max-width:680px;margin:0 auto">
       <h2>👩‍🏫 Tạo phòng thi mới</h2>
       <div style="margin:14px 0">
         <label>Chế độ phòng thi</label>
@@ -126,7 +139,7 @@
           </div>
 
           <div class="card hidden" id="passageCard">
-            <div class="row between"><h2 style="margin:0">📄 Đoạn văn</h2><span class="tag" id="passageSource"></span></div>
+            <div class="row between"><h2 style="margin:0">📄 Đoạn văn (Chỉ hiển thị cho Giảng viên)</h2><span class="tag" id="passageSource"></span></div>
             <p id="passageText" class="muted" style="font-family:var(--mono);margin-bottom:0"></p>
           </div>
         </div>
@@ -162,6 +175,29 @@
       </div>
     </section>
 
+    <!-- Hộp thoại soi chi tiết bài làm & biểu đồ tốc độ của sinh viên -->
+    <div id="inspectModal" class="overlay hidden" style="z-index:9000">
+      <div class="card stack" style="max-width:680px;width:92%;max-height:88vh;overflow:auto">
+        <div class="row between">
+          <h2 id="inspTitle" style="margin:0">🔍 Kiểm tra bài thi sinh viên</h2>
+          <button id="btnCloseInspect" class="btn ghost sm">✕ Đóng</button>
+        </div>
+        <div id="inspSummary" class="stats" style="grid-template-columns:repeat(4,1fr)"></div>
+        <div>
+          <label>📈 Biểu đồ tốc độ WPM theo thời gian</label>
+          <div id="inspChart" style="background:#0f1330;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:130px"></div>
+        </div>
+        <div>
+          <label>🛡️ Nhật ký kiểm tra chống gian lận (Anti-Cheat Log)</label>
+          <div id="inspCheatLog" style="background:#0f1330;border:1px solid var(--line);border-radius:10px;padding:10px;max-height:140px;overflow:auto;font-size:.9rem"></div>
+        </div>
+        <div>
+          <label>✍️ Văn bản sinh viên đã gõ trên Server</label>
+          <div id="inspTyped" style="background:#0f1330;border:1px solid var(--line);border-radius:10px;padding:12px;font-family:var(--mono);max-height:140px;overflow:auto;white-space:pre-wrap"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="preparing" class="overlay hidden">
       <div class="spinner"></div>
       <div>Đang chuẩn bị đoạn văn...</div>
@@ -169,7 +205,7 @@
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/js/common.js?v=3"></script>
-  <script src="/js/teacher.js?v=3"></script>
+  <script src="/js/common.js?v=4"></script>
+  <script src="/js/teacher.js?v=4"></script>
 </body>
 </html>

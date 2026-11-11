@@ -47,15 +47,29 @@
 
   /**
    * Bảng xếp hạng thời gian thực.
-   * opts: { meId, limit, showProgress, kick:boolean, final:boolean, showCheat:boolean }
+   * opts: { meId, limit, showProgress, kick:boolean, final:boolean, showCheat:boolean, inspect:boolean }
    */
   function standingsTable(list, opts) {
     opts = opts || {};
     const rows = (opts.limit ? list.slice(0, opts.limit) : list).map((p) => {
       const cls = [p.id === opts.meId ? 'me' : '', p.connected ? '' : 'offline'].join(' ');
-      const cheatBadge = (opts.showCheat && p.cheatFlags > 0)
-        ? ' <span class="tag bad" title="Phát hiện thao tác nghi vấn gian lận (paste/auto-text)">⚠️ ' + p.cheatFlags + '</span>'
-        : '';
+      let cheatBadge = '';
+      if (opts.showCheat) {
+        if (p.cheatFlags > 0) {
+          const tip = escapeHtml(p.lastCheatReason || 'Phát hiện thao tác nghi vấn gian lận');
+          cheatBadge = ' <span class="tag bad" title="' + tip + '">⚠️ ' + p.cheatFlags + '</span>';
+        } else if (p.suspicionScore >= 25) {
+          const tip = escapeHtml(p.lastCheatReason || 'Nghi vấn bất thường');
+          cheatBadge = ' <span class="tag warn" title="' + tip + '">🧐 ' + p.suspicionScore + '%</span>';
+        }
+      }
+      const actions = [];
+      if (opts.inspect) {
+        actions.push('<button class="btn sm ghost" data-inspect="' + p.id + '" title="Xem biểu đồ tốc độ & nhật ký chống gian lận">🔍 Soi</button>');
+      }
+      if (opts.kick) {
+        actions.push('<button class="btn sm ghost" data-kick="' + p.id + '" title="Mời ra khỏi phòng">✕</button>');
+      }
       return '<tr class="' + cls + '">' +
         '<td>' + rankCell(p.rank) + '</td>' +
         '<td>' + escapeHtml(p.name) +
@@ -71,9 +85,10 @@
         '<td class="num">' + p.wpm + '</td>' +
         '<td class="num">' + p.accuracy + '%</td>' +
         (opts.final ? '<td class="num">' + formatSec(p.timeMs) + '</td>' : '') +
-        (opts.kick ? '<td><button class="btn sm ghost" data-kick="' + p.id + '" title="Mời ra khỏi phòng">✕</button></td>' : '') +
+        (actions.length ? '<td class="row" style="gap:6px;justify-content:flex-end">' + actions.join('') + '</td>' : '') +
         '</tr>';
     }).join('');
+    const hasActions = !!(opts.kick || opts.inspect);
     return '<table><thead><tr>' +
       '<th>Hạng</th><th>Sinh viên</th>' +
       (opts.showProgress ? '<th>Tiến độ</th>' : '') +
@@ -82,7 +97,7 @@
       '<th class="num" title="Số từ mỗi phút (5 ký tự = 1 từ)">WPM</th>' +
       '<th class="num">Chính xác</th>' +
       (opts.final ? '<th class="num" title="Thời điểm đạt số ký tự đúng cuối cùng">Thời gian</th>' : '') +
-      (opts.kick ? '<th></th>' : '') +
+      (hasActions ? '<th></th>' : '') +
       '</tr></thead><tbody>' + (rows || '<tr><td colspan="9" class="muted center">Chưa có sinh viên nào</td></tr>') + '</tbody></table>';
   }
 

@@ -1,16 +1,16 @@
 /*
- * typing.js - Hiển thị đoạn văn trên <canvas> (chống đọc DOM) + Chặn F12/DevTools + Chống Auto-typer.
+ * typing.js - Hiển thị đoạn văn Vector Glyphs trên <canvas> (chống đọc DOM & chống đọc WebSocket)
+ *             + Chặn F12/DevTools + Chống Auto-typer.
  *
- * Các lớp bảo vệ chống F12 / DOM / JS ngầm / Extension:
+ * Các lớp bảo vệ chống F12 / DOM / JS ngầm / Extension / VS Code Socket Script:
  *  1. Lưu toàn bộ hàm Native C++ ngay khi trang nạp (Event.prototype.isTrusted,
- *     HTMLTextAreaElement.prototype.value, CanvasRenderingContext2D.prototype.fillText/measureText)
- *     -> Sinh viên mở F12 Console ghi đè prototype để bắt chữ cũng hoàn toàn vô tác dụng.
- *  2. Vẽ đoạn văn mẫu lên <canvas> -> Mở F12 tab Elements soi DOM hoàn toàn KHÔNG có chữ nào.
+ *     HTMLTextAreaElement.prototype.value, CanvasRenderingContext2D.prototype.fill/fillText/measureText)
+ *     -> Sinh viên mở F12 Console hay dùng Extension ghi đè prototype để bắt chữ cũng vô tác dụng.
+ *  2. Chế độ Phòng thi (Vector Glyphs): Server chuyển từng chữ thành đường cong vector biến dạng
+ *     ngẫu nhiên (Path2D), KHÔNG gửi chuỗi văn bản qua mạng hay lưu trong bộ nhớ JS của trình duyệt.
  *  3. Chặn phím tắt F12, Ctrl+Shift+I/J/C/K, Ctrl+U, Ctrl+S và chuột phải trên toàn trang.
- *  4. Phát hiện mở cửa sổ F12 (DevTools Detector) theo thời gian thực:
- *     Ngay khi mở F12 -> xoá trắng Canvas, khoá ô gõ, hiện màn hình cảnh báo đỏ toàn trang
- *     và gửi cờ gian lận "Mở F12 (DevTools)" về bảng xếp hạng của giảng viên.
- *  5. Khoá setter .value của ô gõ và thu thập sinh trắc học nhịp phím (dt, dw) gửi lên server.
+ *  4. Phát hiện mở cửa sổ F12 (DevTools Detector) chính xác trên mọi mức DPI Scaling của Windows.
+ *  5. Khoá setter .value của ô gõ và thu thập sinh trắc học nhịp phím (dt, dw, bs) gửi lên server.
  */
 (function () {
   'use strict';
@@ -34,6 +34,9 @@
     }
   })();
 
+  const nativeFill = (typeof CanvasRenderingContext2D !== 'undefined')
+    ? CanvasRenderingContext2D.prototype.fill
+    : null;
   const nativeFillText = (typeof CanvasRenderingContext2D !== 'undefined')
     ? CanvasRenderingContext2D.prototype.fillText
     : null;
@@ -46,6 +49,7 @@
   const nativeClearRect = (typeof CanvasRenderingContext2D !== 'undefined')
     ? CanvasRenderingContext2D.prototype.clearRect
     : null;
+  const NativePath2D = (typeof Path2D !== 'undefined') ? Path2D : null;
 
   const nativeNow = (typeof performance !== 'undefined' && performance.now)
     ? performance.now.bind(performance)
@@ -119,12 +123,12 @@
     }
 
     function checkDevTools() {
-      // Kiểm tra chênh lệch kích thước khi dock F12 bên phải/trái/dưới
-      const zoom = window.devicePixelRatio || 1;
-      const widthDiff = window.outerWidth - window.innerWidth * zoom;
-      const heightDiff = window.outerHeight - window.innerHeight * zoom;
-      const sizeDocked = (window.outerWidth > 0 && widthDiff > 220) ||
-                         (window.outerHeight > 0 && heightDiff > 220);
+      // outerWidth và innerWidth đều tính theo CSS pixel trên trình duyệt hiện đại
+      // (không nhân devicePixelRatio để tránh báo nhầm trên màn hình Windows scale 125%/150%)
+      const widthDiff = window.outerWidth - window.innerWidth;
+      const heightDiff = window.outerHeight - window.innerHeight;
+      const sizeDocked = (window.outerWidth > 0 && widthDiff > 240) ||
+                         (window.outerHeight > 0 && heightDiff > 240);
 
       // Kiểm tra bằng console getter trap (phát hiện cả khi F12 mở thành cửa sổ rời)
       let consoleTrapped = false;
@@ -136,7 +140,6 @@
             return '';
           }
         });
-        // Khi Console đang mở, trình duyệt đọc thuộc tính .id để preview phần tử
         console.debug(probe);
         if (console.clear) console.clear();
       } catch (_) {}
@@ -150,7 +153,7 @@
       }
     }
 
-    setInterval(checkDevTools, 600);
+    setInterval(checkDevTools, 700);
     window.addEventListener('resize', checkDevTools);
   }
 
@@ -167,7 +170,14 @@
         getMethod: opts.getMethod || (() => 'telex'),
         onChange: opts.onChange || (() => {}),
         onCheatAttempt: opts.onCheatAttempt || (() => {}),
+        mode: 'text', // 'text' (Tự luyện) | 'glyphs' (Phòng thi Vector chống lộ đề)
         target: [],
+        totalLen: 0,
+        glyphPack: null,
+        pathMap: new Map(),
+        serverStates: '',
+        serverCorrect: 0,
+        serverMistakes: 0,
         typed: '',
         typedArr: [],
         enabled: false,
@@ -337,15 +347,59 @@
       } catch (_) {}
     }
 
+    /** Dùng cho chế độ Tự luyện cá nhân trên trang chủ */
     setPassage(text, typed) {
       const state = PRIV.get(this);
       if (!state) return;
+      state.mode = 'text';
       state.target = Array.from(VN.canonical(text));
+      state.totalLen = state.target.length;
+      state.glyphPack = null;
+      state.pathMap.clear();
+      state.serverStates = '';
       state.scrollY = 0;
       state.telemetry = [];
       state.downMap.clear();
       state.lastKeyDownAt = 0;
       this.setTyped(typed || '', true);
+    }
+
+    /**
+     * Dùng cho Phòng thi (Lớp học & Battle 1v1):
+     * Nhận các đường cong Vector (Path2D) từ server thay vì chuỗi văn bản.
+     */
+    setGlyphs(glyphPack, typed, charStates) {
+      const state = PRIV.get(this);
+      if (!state) return;
+      state.mode = 'glyphs';
+      state.target = [];
+      state.glyphPack = glyphPack || null;
+      state.totalLen = glyphPack && glyphPack.total ? glyphPack.total : 0;
+      state.pathMap.clear();
+      if (glyphPack && Array.isArray(glyphPack.paths) && NativePath2D) {
+        for (let i = 0; i < glyphPack.paths.length; i++) {
+          const pair = glyphPack.paths[i];
+          if (pair && pair[1]) {
+            state.pathMap.set(pair[0], new NativePath2D(pair[1]));
+          }
+        }
+      }
+      state.serverStates = String(charStates || '');
+      state.scrollY = 0;
+      state.telemetry = [];
+      state.downMap.clear();
+      state.lastKeyDownAt = 0;
+      this.setTyped(typed || '', true);
+    }
+
+    /** Cập nhật màu đúng/sai của từng ký tự từ phản hồi của Server */
+    setServerState(charStates, correct, mistakes) {
+      const state = PRIV.get(this);
+      if (!state) return;
+      if (typeof charStates === 'string') state.serverStates = charStates;
+      if (typeof correct === 'number') state.serverCorrect = correct;
+      if (typeof mistakes === 'number') state.serverMistakes = mistakes;
+      this._render(state);
     }
 
     enable(on) {
@@ -449,7 +503,7 @@
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return; }
       if (!e.key || e.key.length !== 1) return;
       e.preventDefault();
-      if (state.typedArr.length >= state.target.length) return;
+      if (state.totalLen > 0 && state.typedArr.length >= state.totalLen) return;
       if (e.key === ' ') {
         this.setTyped(state.typed + ' ');
         return;
@@ -499,7 +553,9 @@
       const state = PRIV.get(this);
       if (!state) return;
       let arr = Array.from(String(value).normalize('NFC'));
-      if (arr.length > state.target.length) arr = arr.slice(0, state.target.length);
+      if (state.totalLen > 0 && arr.length > state.totalLen) {
+        arr = arr.slice(0, state.totalLen);
+      }
       state.typed = arr.join('');
       state.typedArr = arr;
       if (this._getInputValue(state) !== state.typed) {
@@ -514,7 +570,7 @@
       if (!silent) state.onChange(state.typed);
     }
 
-    /** Vẽ đoạn văn mẫu bằng các hàm Canvas native C++ đã lưu (chống hook fillText) */
+    /** Vẽ đoạn văn mẫu bằng các hàm Canvas native C++ đã lưu */
     _render(state) {
       const canvas = state.canvas;
       const ctx = state.ctx;
@@ -533,9 +589,9 @@
       nativeClearRect.call(ctx, 0, 0, width, height);
 
       const fontSize = 21;
-      const lineH = 34;
+      const lineH = 36;
       const padX = 20;
-      const padY = 16;
+      const padY = 14;
       ctx.font = '600 ' + fontSize + 'px "JetBrains Mono", "Cascadia Code", Consolas, monospace';
       ctx.textBaseline = 'top';
 
@@ -543,6 +599,12 @@
       if (devtoolsOpen) {
         ctx.fillStyle = '#ff5c7a';
         nativeFillText.call(ctx, '🚫 Đã ẩn đoạn văn vì phát hiện mở F12 (DevTools).', padX, padY + lineH);
+        ctx.restore();
+        return;
+      }
+
+      if (state.mode === 'glyphs') {
+        this._renderGlyphs(state, ctx, width, height, padX, padY);
         ctx.restore();
         return;
       }
@@ -624,10 +686,115 @@
       ctx.restore();
     }
 
+    /** Vẽ các đường cong Vector (Path2D) từ server mà không cần biết chữ gốc là gì */
+    _renderGlyphs(state, ctx, width, height, padX, padY) {
+      const pack = state.glyphPack;
+      if (!pack || !pack.total || !nativeFill) {
+        ctx.fillStyle = '#9aa3d4';
+        nativeFillText.call(ctx, '⏳ Đang chờ bắt đầu vòng thi — Đoạn văn sẽ hiện ngay khi tính giờ...', padX, padY + 24);
+        return;
+      }
+
+      const total = pack.total;
+      const m = pack.metrics || { adv: 13.2, lineH: 40, scale: 4, size: 22 };
+      const cw = m.adv;
+      const lineH = m.lineH;
+      const invScale = 1 / (m.scale || 4);
+      const typed = Array.from(VN.canonical(state.typed));
+      const len = typed.length;
+      const states = state.serverStates || '';
+
+      const maxX = width - padX;
+      const pos = new Array(total);
+      let x = padX;
+      let y = padY;
+      let i = 0;
+
+      while (i < total) {
+        const isSpace = !state.pathMap.has(i);
+        if (isSpace) {
+          if (x + cw > maxX) { x = padX; y += lineH; }
+          pos[i] = { x, y, w: cw };
+          x += cw;
+          i++;
+        } else {
+          let j = i;
+          while (j < total && state.pathMap.has(j)) j++;
+          const wordLen = j - i;
+          const wordW = wordLen * cw;
+          if (x > padX && x + wordW > maxX) {
+            x = padX;
+            y += lineH;
+          }
+          for (let k = 0; k < wordLen; k++) {
+            if (x + cw > maxX && x > padX) { x = padX; y += lineH; }
+            pos[i + k] = { x, y, w: cw };
+            x += cw;
+          }
+          i = j;
+        }
+      }
+
+      const caretIdx = Math.min(len, Math.max(0, total - 1));
+      const caretPos = pos[caretIdx] || { x: padX, y: padY };
+      state.scrollY = Math.max(0, caretPos.y - padY - lineH);
+
+      for (let idx = 0; idx < total; idx++) {
+        const p = pos[idx];
+        const drawY = p.y - state.scrollY;
+        if (drawY + lineH < 0 || drawY > height) continue;
+
+        const stChar = idx < states.length ? states[idx] : '';
+        if (idx < len) {
+          if (stChar === '1') {
+            ctx.fillStyle = '#3ddc97';
+          } else if (stChar === '2') {
+            ctx.fillStyle = '#ffc857';
+          } else if (stChar === '0') {
+            ctx.fillStyle = 'rgba(255, 92, 122, 0.85)';
+            nativeFillRect.call(ctx, p.x - 1, drawY + 6, p.w + 2, m.size + 8);
+            ctx.fillStyle = '#ffffff';
+          } else {
+            ctx.fillStyle = '#c5cff8';
+          }
+        } else if (idx === len) {
+          ctx.fillStyle = 'rgba(108, 123, 255, 0.28)';
+          nativeFillRect.call(ctx, p.x - 1, drawY + 6, p.w + 2, m.size + 8);
+          ctx.fillStyle = '#ffc857';
+          nativeFillRect.call(ctx, p.x - 1, drawY + 6, 2.5, m.size + 8);
+          ctx.fillStyle = '#ffffff';
+        } else {
+          ctx.fillStyle = '#8b93c6';
+        }
+
+        const path2d = state.pathMap.get(idx);
+        if (path2d) {
+          ctx.save();
+          ctx.translate(p.x, drawY);
+          ctx.scale(invScale, invScale);
+          nativeFill.call(ctx, path2d);
+          ctx.restore();
+        }
+      }
+    }
+
     stats() {
       const state = PRIV.get(this);
-      if (!state) return { correct: 0, typedLen: 0, total: 0 };
+      if (!state) return { correct: 0, typedLen: 0, total: 0, mistakes: 0 };
       const typed = Array.from(VN.canonical(state.typed));
+      if (state.mode === 'glyphs') {
+        let correct = 0;
+        const st = state.serverStates || '';
+        for (let i = 0; i < typed.length && i < st.length; i++) {
+          if (st[i] === '1') correct++;
+        }
+        return {
+          correct,
+          mistakes: state.serverMistakes || 0,
+          typedLen: typed.length,
+          total: state.totalLen
+        };
+      }
       let correct = 0;
       let mistakes = 0;
       const complete = typed.length === state.target.length;

@@ -183,13 +183,14 @@
     $('#lobbyCard').classList.toggle('hidden', st === 'running' || st === 'countdown');
 
     const modeBadge = isDuel ? ' [Battle 1 vs 1]' : ' [Cả lớp]';
+    const maxWpmText = s.settings && s.settings.maxWpm ? ' · Trần ' + s.settings.maxWpm + ' WPM' : '';
+    const rosterBadge = s.settings && s.settings.hasRoster ? ' · Khóa theo Danh sách lớp' : '';
     $('#roomTitle').innerHTML = st === 'finished'
       ? '🏆 Kết quả chung cuộc' + modeBadge + ' — Vòng ' + s.round
       : st === 'lobby'
         ? '📊 Danh sách phòng thi' + modeBadge + ' (' + s.standings.length + (isDuel ? '/2' : '') + ' sinh viên)'
         : '<span class="live-dot"></span>📊 Bảng xếp hạng thời gian thực' + modeBadge + ' — Vòng ' + s.round;
-    $('#roomSub').textContent = 'Thời gian thi: ' + formatTime(s.durationMs) +
-      ' · Cập nhật trực tiếp theo số ký tự đúng & tốc độ gõ';
+    $('#roomSub').textContent = 'Thời gian thi: ' + formatTime(s.durationMs) + maxWpmText + rosterBadge;
 
     if (st === 'countdown') clock = { label: 'Chuẩn bị', until: Date.now() + s.startsInMs, next: Date.now() + s.startsInMs + s.durationMs };
     else if (st === 'running') clock = { label: 'Còn lại', until: Date.now() + s.remainingMs };
@@ -218,7 +219,8 @@
       showProgress: true,
       final: st === 'finished',
       kick: st !== 'finished',
-      showCheat: true
+      showCheat: true,
+      inspect: st !== 'lobby'
     });
   }
 
@@ -257,6 +259,62 @@
       );
     });
   }
+
+  function renderTimelineSvg(timeline) {
+    if (!timeline || timeline.length === 0) {
+      return '<div class="muted small center" style="padding:28px 0">Chưa có dữ liệu biểu đồ tốc độ cho sinh viên này.</div>';
+    }
+    const W = 580;
+    const H = 120;
+    const padL = 36;
+    const padR = 14;
+    const padT = 14;
+    const padB = 22;
+    const maxT = Math.max(10, timeline[timeline.length - 1].tSec || 10);
+    const maxWpm = Math.max(80, ...timeline.map((pt) => pt.wpm || 0));
+    const xOf = (t) => padL + ((t / maxT) * (W - padL - padR));
+    const yOf = (w) => H - padB - ((w / maxWpm) * (H - padT - padB));
+    const pts = timeline.map((pt) => `${xOf(pt.tSec).toFixed(1)},${yOf(pt.wpm).toFixed(1)}`).join(' ');
+    const circles = timeline.map((pt) =>
+      `<circle cx="${xOf(pt.tSec).toFixed(1)}" cy="${yOf(pt.wpm).toFixed(1)}" r="3" fill="#6c7bff"><title>${pt.tSec}s: ${pt.wpm} WPM (${pt.correct} đúng)</title></circle>`
+    ).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+      <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="#252b5c" stroke-dasharray="3,3"/>
+      <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#252b5c"/>
+      <text x="4" y="${padT + 4}" fill="#9aa3d4" font-size="10">${maxWpm} WPM</text>
+      <text x="4" y="${H - padB}" fill="#9aa3d4" font-size="10">0</text>
+      <text x="${W - padR - 24}" y="${H - 5}" fill="#9aa3d4" font-size="10">${maxT}s</text>
+      <polyline fill="none" stroke="#3ddc97" stroke-width="2.2" points="${pts}"/>
+      ${circles}
+    </svg>`;
+  }
+
+  async function openInspectModal(playerId) {
+    const res = await call('host:inspect', { id: playerId });
+    if (!res || !res.ok || !res.player) return;
+    const p = res.player;
+    $('#inspTitle').textContent = '🔍 Chi tiết bài làm: ' + p.name;
+    $('#inspSummary').innerHTML =
+      `<div class="stat"><div class="v">${p.correct}</div><div class="k">Ký tự đúng</div></div>` +
+      `<div class="stat"><div class="v">${p.keyCount || 0}</div><div class="k">Phím vật lý đã bấm</div></div>` +
+      `<div class="stat"><div class="v">${p.backspaces || 0}</div><div class="k">Số lần Backspace</div></div>` +
+      `<div class="stat"><div class="v" style="color:${(p.cheatFlags > 0 || p.suspicionScore >= 50) ? '#ff5c7a' : '#3ddc97'}">${p.suspicionScore || 0}%</div><div class="k">Điểm nghi vấn (${p.cheatFlags || 0} cờ)</div></div>`;
+    $('#inspChart').innerHTML = renderTimelineSvg(p.timeline || []);
+    if (p.cheatLog && p.cheatLog.length > 0) {
+      $('#inspCheatLog').innerHTML = p.cheatLog.map((item) =>
+        `<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.06)"><span class="tag bad">${item.tSec}s</span> ${escapeHtml(item.reason)}</div>`
+      ).join('');
+    } else {
+      $('#inspCheatLog').innerHTML = '<div class="muted small">✅ Không phát hiện hành vi bất thường nào.</div>';
+    }
+    $('#inspTyped').textContent = p.typed || '(Chưa gõ ký tự nào)';
+    $('#inspectModal').classList.remove('hidden');
+  }
+
+  $('#btnCloseInspect').onclick = () => $('#inspectModal').classList.add('hidden');
+  $('#inspectModal').addEventListener('click', (e) => {
+    if (e.target === $('#inspectModal')) $('#inspectModal').classList.add('hidden');
+  });
 
   $('#btnCreate').onclick = () => {
     const settings = readSettings($('#createSettings'));
@@ -298,6 +356,11 @@
     navigator.clipboard.writeText($('#joinUrl').textContent).then(() => toast('Đã sao chép link'));
   };
   document.addEventListener('click', (e) => {
+    const inspBtn = e.target.closest('[data-inspect]');
+    if (inspBtn) {
+      openInspectModal(inspBtn.dataset.inspect);
+      return;
+    }
     const b = e.target.closest('[data-kick]');
     if (!b) return;
     const p = snap && snap.standings.find((x) => x.id === b.dataset.kick);
@@ -306,9 +369,9 @@
 
   $('#btnExport').onclick = () => {
     if (!snap) return;
-    const rows = [['Hạng', 'Tên', 'Ký tự đúng', 'Lỗi chính tả', 'WPM', 'Chính xác (%)', 'Tiến độ (%)', 'Hoàn thành', 'Thời gian (giây)', 'Cảnh báo gian lận']];
+    const rows = [['Hạng', 'Tên', 'Ký tự đúng', 'Lỗi chính tả', 'WPM', 'Chính xác (%)', 'Tiến độ (%)', 'Hoàn thành', 'Thời gian (giây)', 'Cảnh báo gian lận', 'Điểm nghi vấn (%)', 'Lý do nghi vấn gần nhất']];
     snap.standings.forEach((p) => rows.push([
-      p.rank, p.name, p.correct, p.mistakes, p.wpm, p.accuracy, p.progress, p.finished ? 'Có' : 'Không', (p.timeMs / 1000).toFixed(1), p.cheatFlags || 0
+      p.rank, p.name, p.correct, p.mistakes, p.wpm, p.accuracy, p.progress, p.finished ? 'Có' : 'Không', (p.timeMs / 1000).toFixed(1), p.cheatFlags || 0, p.suspicionScore || 0, p.lastCheatReason || ''
     ]));
     const d = new Date();
     const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') +

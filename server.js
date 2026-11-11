@@ -16,6 +16,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const TICK_MS = 150;
 const STANDINGS_INTERVAL_MS = 200; // cập nhật bảng xếp hạng thời gian thực mỗi 200ms
 const ROOM_IDLE_MS = 3 * 60 * 60 * 1000; // xoá phòng sau 3 giờ không hoạt động
+const MIN_PROGRESS_INTERVAL_MS = 35; // chống spam gói tin progress từ script ngoài
 
 // ---------- cấu hình đăng nhập Giáo viên ----------
 const TEACHER_USER = process.env.TEACHER_USER || 'teacher';
@@ -29,6 +30,23 @@ function safeEqual(a, b) {
   const bb = Buffer.from(String(b || ''), 'utf8');
   if (ba.length !== bb.length) return false;
   return crypto.timingSafeEqual(ba, bb);
+}
+
+function isLoginRateLimited(ip) {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  return !!(rec && now < rec.resetAt && rec.count >= 10);
+}
+
+function recordLoginAttempt(ip, success) {
+  if (success) {
+    loginAttempts.delete(ip);
+    return;
+  }
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  const nextCount = rec && now < rec.resetAt ? rec.count + 1 : 1;
+  loginAttempts.set(ip, { count: nextCount, resetAt: now + 5 * 60 * 1000 });
 }
 
 function signTeacherToken(username) {
@@ -53,6 +71,7 @@ function verifyTeacherToken(token) {
 }
 
 const app = express();
+app.set('trust proxy', 1); // lấy đúng IP thật của sinh viên/giảng viên khi chạy sau proxy Render
 app.disable('x-powered-by');
 app.use(express.json({ limit: '16kb' }));
 app.use((_req, res, next) => {
@@ -78,21 +97,18 @@ app.get('/api/practice-passage', async (req, res) => {
 // API đăng nhập Giáo viên
 app.post('/api/teacher/login', (req, res) => {
   const ip = req.ip || 'local';
-  const now = Date.now();
-  const rec = loginAttempts.get(ip);
-  if (rec && now < rec.resetAt && rec.count >= 10) {
+  if (isLoginRateLimited(ip)) {
     return res.status(429).json({ error: 'Nhập sai quá nhiều lần. Vui lòng thử lại sau 5 phút.' });
   }
 
   const { username, password } = req.body || {};
   if (safeEqual(String(username || '').trim(), TEACHER_USER) && safeEqual(password, TEACHER_PASSWORD)) {
-    loginAttempts.delete(ip);
+    recordLoginAttempt(ip, true);
     const teacherToken = signTeacherToken(TEACHER_USER);
     return res.json({ ok: true, teacherToken, username: TEACHER_USER });
   }
 
-  const nextCount = rec && now < rec.resetAt ? rec.count + 1 : 1;
-  loginAttempts.set(ip, { count: nextCount, resetAt: now + 5 * 60 * 1000 });
+  recordLoginAttempt(ip, false);
   return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu giáo viên.' });
 });
 
@@ -107,14 +123,23 @@ const io = new Server(server, { maxHttpBufferSize: 64 * 1024 });
 const rooms = new RoomManager();
 
 // ------------------------------------------------------------------ helpers
-function emitUpdate(room) {
-  io.to(room.code).emit('room:update', room.snapshot());
+function hostChannel(code) {
+  return 'host:' + code;
+}
+
+function emitUpdate(room, now = Date.now()) {
+  // Sinh viên chỉ nhận snapshot không có chữ gốc (chỉ có vector glyphs khi state === 'running')
+  io.to(room.code).emit('room:update', room.snapshot(now));
+  // Giảng viên nhận teacherSnapshot có đoạn văn gốc để đối chiếu
+  io.to(hostChannel(room.code)).emit('room:update', room.teacherSnapshot(now));
   room.dirty = false;
-  room.lastStandingsAt = Date.now();
+  room.lastStandingsAt = now;
 }
 
 function broadcastStandingsNow(room, now = Date.now()) {
-  io.to(room.code).emit('standings', { standings: room.standings(now), state: room.state });
+  const payload = { standings: room.standings(now), state: room.state };
+  io.to(room.code).emit('standings', payload);
+  io.to(hostChannel(room.code)).emit('standings', payload);
   room.dirty = false;
   room.lastStandingsAt = now;
 }
@@ -149,6 +174,7 @@ async function startRound(room) {
   if (room.state === 'countdown' || room.state === 'running') return { error: 'Vòng thi đang diễn ra.' };
   room.generating = true;
   io.to(room.code).emit('room:preparing');
+  io.to(hostChannel(room.code)).emit('room:preparing');
   try {
     const result = await generatePassage({
       source: room.settings.source,
@@ -177,16 +203,30 @@ function safeAck(ack) {
   return typeof ack === 'function' ? ack : () => {};
 }
 
+function socketIp(socket) {
+  const xff = socket.handshake && socket.handshake.headers && socket.handshake.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) {
+    return xff.split(',')[0].trim();
+  }
+  return (socket.handshake && socket.handshake.address) || 'local';
+}
+
 // ------------------------------------------------------------------ sockets
 io.on('connection', (socket) => {
-  // ---------- Đăng nhập Giáo viên qua Socket ----------
+  // ---------- Đăng nhập Giáo viên qua Socket (có chặn brute-force theo IP) ----------
   socket.on('teacher:login', (payload, ack) => {
     ack = safeAck(ack);
+    const ip = socketIp(socket);
+    if (isLoginRateLimited(ip)) {
+      return ack({ error: 'Nhập sai quá nhiều lần. Vui lòng thử lại sau 5 phút.' });
+    }
     const { username, password } = payload || {};
     if (safeEqual(String(username || '').trim(), TEACHER_USER) && safeEqual(password, TEACHER_PASSWORD)) {
+      recordLoginAttempt(ip, true);
       const teacherToken = signTeacherToken(TEACHER_USER);
       return ack({ ok: true, teacherToken, username: TEACHER_USER });
     }
+    recordLoginAttempt(ip, false);
     return ack({ error: 'Sai tài khoản hoặc mật khẩu giáo viên.' });
   });
 
@@ -198,9 +238,9 @@ io.on('connection', (socket) => {
     }
     const roomType = payload && payload.type === 'duel' ? 'duel' : 'class';
     const room = rooms.create(roomType, payload && payload.settings);
-    socket.join(room.code);
+    socket.join(hostChannel(room.code));
     socket.data.hostOf = room.code;
-    ack({ ok: true, code: room.code, type: room.type, hostToken: room.hostToken, snapshot: room.snapshot() });
+    ack({ ok: true, code: room.code, type: room.type, hostToken: room.hostToken, snapshot: room.teacherSnapshot() });
   });
 
   socket.on('host:join', (payload, ack) => {
@@ -210,10 +250,10 @@ io.on('connection', (socket) => {
     }
     const room = hostRoom(payload);
     if (!room) return ack({ error: 'Phòng không tồn tại hoặc đã hết hạn.' });
-    socket.join(room.code);
+    socket.join(hostChannel(room.code));
     socket.data.hostOf = room.code;
     room.touch();
-    ack({ ok: true, code: room.code, type: room.type, snapshot: room.snapshot(), settings: room.settings });
+    ack({ ok: true, code: room.code, type: room.type, snapshot: room.teacherSnapshot(), settings: room.settings });
   });
 
   socket.on('host:settings', (payload, ack) => {
@@ -252,6 +292,7 @@ io.on('connection', (socket) => {
     room.clearTimers();
     room.state = 'lobby';
     room.passage = '';
+    room.glyphPack = null;
     emitUpdate(room);
     ack({ ok: true });
   });
@@ -273,6 +314,15 @@ io.on('connection', (socket) => {
     ack({ ok: true });
   });
 
+  socket.on('host:inspect', (payload, ack) => {
+    ack = safeAck(ack);
+    const room = hostRoom(payload);
+    if (!room) return ack({ error: 'Không có quyền hoặc phiên đăng nhập đã hết hạn.', authError: !requireTeacher(payload) });
+    const detail = room.inspectPlayer(payload && payload.id);
+    if (!detail) return ack({ error: 'Không tìm thấy sinh viên.' });
+    ack({ ok: true, player: detail });
+  });
+
   socket.on('host:close', (payload, ack) => {
     ack = safeAck(ack);
     const room = hostRoom(payload);
@@ -287,7 +337,15 @@ io.on('connection', (socket) => {
     ack = safeAck(ack);
     const room = rooms.get(payload && payload.code);
     if (!room) return ack({ error: 'Không tìm thấy phòng. Kiểm tra lại mã phòng.' });
-    const res = room.join(payload.token, payload.name);
+    const existing = payload && payload.token ? room.players.get(payload.token) : null;
+    const hasDuplicateActiveSocket = !!(
+      existing &&
+      existing.connected &&
+      existing.socketId &&
+      existing.socketId !== socket.id &&
+      io.sockets.sockets.has(existing.socketId)
+    );
+    const res = room.join(payload.token, payload.name, hasDuplicateActiveSocket);
     if (res.error) return ack({ error: res.error });
     attachPlayer(socket, room, res.player);
     emitUpdate(room);
@@ -298,14 +356,20 @@ io.on('connection', (socket) => {
       id: res.player.id,
       name: res.player.name,
       typed: res.player.typed,
+      charStates: room.computeCharStates(Array.from(res.player.typed || '')),
       snapshot: room.snapshot()
     });
   });
 
-  socket.on('progress', (payload) => {
+  socket.on('progress', (payload, ack) => {
     const { room, player } = playerOf(socket);
     if (!room || !player || !payload || typeof payload.typed !== 'string') return;
     const now = Date.now();
+    if (!payload.untrusted && socket.data.lastProgressAt && now - socket.data.lastProgressAt < MIN_PROGRESS_INTERVAL_MS) {
+      return;
+    }
+    socket.data.lastProgressAt = now;
+
     const res = room.progress(player.token, payload.typed, now, {
       untrusted: !!payload.untrusted,
       reason: payload.reason,
@@ -313,11 +377,24 @@ io.on('connection', (socket) => {
     });
     if (!res) return;
     if (res.rejected) {
-      socket.emit('cheat:rejected', { reason: res.reason, revertTo: res.revertTo });
+      socket.emit('cheat:rejected', {
+        reason: res.reason,
+        revertTo: res.revertTo,
+        charStates: res.charStates
+      });
       broadcastStandingsNow(room, now);
       return;
     }
     const p = res.player;
+    const ackPayload = {
+      ok: true,
+      charStates: res.charStates,
+      correct: res.correct,
+      mistakes: res.mistakes
+    };
+    if (typeof ack === 'function') ack(ackPayload);
+    else socket.emit('progress:ack', ackPayload);
+
     if (now - (room.lastStandingsAt || 0) >= STANDINGS_INTERVAL_MS) {
       broadcastStandingsNow(room, now);
     }
@@ -352,7 +429,7 @@ io.on('connection', (socket) => {
 setInterval(() => {
   const now = Date.now();
   for (const room of rooms.rooms.values()) {
-    if (room.tick(now)) emitUpdate(room);
+    if (room.tick(now)) emitUpdate(room, now);
     if ((room.state === 'running' || room.state === 'countdown') && now > room.endAt + 1500) {
       finishRound(room);
       continue;
@@ -369,6 +446,9 @@ if (require.main === module) {
   server.listen(PORT, () => {
     console.log(`Typing Battle đang chạy tại http://localhost:${PORT}`);
     console.log(`Tài khoản giáo viên: "${TEACHER_USER}" (đặt TEACHER_USER & TEACHER_PASSWORD để đổi)`);
+    if (TEACHER_PASSWORD === 'teacher123') {
+      console.warn('⚠️ CẢNH BÁO BẢO MẬT: Đang dùng mật khẩu giảng viên mặc định (teacher123). Hãy đặt biến môi trường TEACHER_PASSWORD trên Render!');
+    }
     console.log(`Sinh đoạn văn bằng AI: ${aiAvailable() ? 'BẬT' : 'TẮT (đặt GEMINI_API_KEY để bật)'}`);
   });
 }

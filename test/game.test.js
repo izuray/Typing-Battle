@@ -4,7 +4,7 @@ const { generatePassage } = require('../src/passages');
 const { signTeacherToken, verifyTeacherToken } = require('../server');
 
 (async () => {
-  // 1. Tạo phòng, thêm người chơi, chặn trùng tên
+  // 1. Tạo phòng, thêm người chơi, chặn trùng tên & chặn mở 2 kết nối song song cùng token
   const rm = new RoomManager();
   const room = rm.create('class', { duration: 60, source: 'bank' });
   const a = room.join(null, 'An').player;
@@ -12,22 +12,35 @@ const { signTeacherToken, verifyTeacherToken } = require('../server');
   const c = room.join(null, 'Chi').player;
   assert(a && b && c);
   assert(room.join(null, 'an').error, 'phải chặn tên trùng không phân biệt hoa thường');
-  assert.strictEqual(room.join(a.token, 'An').rejoined, true, 'cho phép kết nối lại bằng token');
+  assert(room.join(a.token, 'An', true).error, 'phải chặn kết nối thứ 2 dùng cùng token khi socket cũ đang mở');
+  assert.strictEqual(room.join(a.token, 'An', false).rejoined, true, 'cho phép kết nối lại bằng token khi mất mạng');
 
-  // 2. Bắt đầu vòng thi và chấm điểm
+  // 2. Bắt đầu vòng thi, kiểm tra KHÔNG lộ đề dạng chữ (plaintext) cho sinh viên
   const t0 = 1_000_000;
   room.begin('Học tập là con đường ngắn nhất để thay đổi tương lai của mỗi người.', 'bank', t0);
   const start = t0 + COUNTDOWN_MS;
   assert.strictEqual(room.state, 'countdown');
+
+  const snapCountdown = room.snapshot(t0 + 500);
+  assert.strictEqual(snapCountdown.passage, '', 'sinh viên không được nhận passage dạng chữ');
+  assert.strictEqual(snapCountdown.glyphs, null, 'trong lúc đếm ngược chưa gửi glyphs');
+  assert(room.teacherSnapshot(t0 + 500).passage.startsWith('Học tập'), 'giảng viên vẫn xem được đoạn văn');
+
   assert.strictEqual(room.tick(start), true);
   assert.strictEqual(room.state, 'running');
+
+  const snapRunning = room.snapshot(start + 100);
+  assert.strictEqual(snapRunning.passage, '', 'khi đang thi vẫn tuyệt đối không gửi passage dạng chữ cho sinh viên');
+  assert(snapRunning.glyphs && snapRunning.glyphs.paths.length > 20, 'khi đang thi gửi các nét vẽ vector (glyphs)');
 
   // An và Bình cùng gõ đúng "Học tập " (8 ký tự), nhưng Bình xong sớm hơn (t+2s vs t+4s)
   room.progress(a.token, 'Học tập ', start + 4000);
   room.progress(b.token, 'Học tập ', start + 2000);
-  // Chi đang gõ dở chữ "Học" ("Ho") -> chưa qua dấu cách nên chưa tính lỗi
-  room.progress(c.token, 'Ho', start + 1000);
+  // Chi đang gõ dở chữ "Học" ("Ho") -> chưa qua dấu cách nên chưa tính lỗi, charStates báo '2' (khung chữ đúng)
+  const rPartial = room.progress(c.token, 'Ho', start + 1000);
   assert.strictEqual(c.mistakes, 0, 'chữ đang gõ dở không bị tính lỗi');
+  assert.strictEqual(rPartial.charStates, '12', 'H đúng (1), o cùng khung chữ với ọ (2)');
+
   // Chi gõ sai từ đã qua dấu cách ("Họx ") -> tính 1 lỗi dù sau đó sửa lại
   room.progress(c.token, 'Họx ', start + 2000);
   assert.strictEqual(c.mistakes, 1);
@@ -63,7 +76,6 @@ const { signTeacherToken, verifyTeacherToken } = require('../server');
   const p2 = duel.join(null, 'Hai').player;
   assert(duel.join(null, 'Ba').error, 'duel chỉ cho 2 người');
   duel.begin('Xin chào Việt Nam.', 'bank', t0);
-  // Gõ theo tốc độ hợp lệ (18 ký tự sau 2 giây)
   duel.progress(p1.token, 'Xin chào ', start + 1000);
   duel.progress(p1.token, 'Xin chào Việt Nam.', start + 2000);
   duel.progress(p2.token, 'Xin chào ', start + 2500);
@@ -118,6 +130,19 @@ const { signTeacherToken, verifyTeacherToken } = require('../server');
   const rHuman = botRoom.progress(human.token, 'Học tập là ', start + 2500, { keys: humanKeys });
   assert.strictEqual(rHuman.rejected, false, 'người thật gõ có nhịp tự nhiên phải được chấp nhận');
   assert.strictEqual(human.correct, 11);
+
+  // 8. Kiểm tra khoá danh sách lớp (Roster) & Soi bài sinh viên (inspectPlayer)
+  const rosterRoom = rm.create('class', {
+    duration: 60,
+    source: 'bank',
+    maxWpm: 100,
+    rosterText: 'B21DCCN001 - Nguyễn Văn An\nB21DCCN002 - Trần Thị Bình'
+  });
+  assert(rosterRoom.join(null, 'Người Lạ').error, 'phải chặn người ngoài danh sách lớp');
+  const rValid = rosterRoom.join(null, 'B21DCCN001 - Nguyễn Văn An');
+  assert(rValid.player, 'sinh viên có trong danh sách lớp được vào phòng');
+  const detail = botRoom.inspectPlayer(human.id);
+  assert(detail && detail.name === 'NguoiThat' && detail.timeline.length >= 1, 'inspectPlayer trả về biểu đồ timeline');
 
   console.log('game.js & passages.js: all tests passed');
 })();

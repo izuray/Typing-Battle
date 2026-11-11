@@ -85,5 +85,39 @@ const { signTeacherToken, verifyTeacherToken } = require('../server');
   assert.strictEqual(verifyTeacherToken(tk + 'tampered'), null, 'token bị sửa phải bị từ chối');
   assert.strictEqual(verifyTeacherToken('invalid'), null);
 
+  // 7. Chống script JS chạy ngầm (Auto-typer / setInterval / bơm gói tin thiếu phím vật lý)
+  const botRoom = rm.create('class', { duration: 60, source: 'bank' });
+  const bot1 = botRoom.join(null, 'BotSocket').player;
+  const bot2 = botRoom.join(null, 'BotInterval').player;
+  const human = botRoom.join(null, 'NguoiThat').player;
+  botRoom.begin('Học tập là con đường ngắn nhất để thay đổi tương lai của mỗi người.', 'bank', t0);
+
+  // 7a. Script gửi thẳng chuỗi văn bản qua socket mà không có lịch sử nhấn phím vật lý (keys: [])
+  const rSocket = botRoom.progress(bot1.token, 'Học tập là ', start + 2000, { keys: [] });
+  assert.strictEqual(rSocket.rejected, true, 'phải chặn gói tin tăng văn bản nhưng không có sự kiện phím vật lý');
+  assert.strictEqual(bot1.cheatFlags, 1);
+
+  // 7b. Script giả lập phím bằng setInterval(100ms) đều tăm tắp (sd(dt) < 4ms)
+  const uniformKeys = Array.from({ length: 18 }, () => ({ dt: 100, dw: 50, bs: 0 }));
+  const rInterval = botRoom.progress(bot2.token, 'Học tập là ', start + 2000, { keys: uniformKeys });
+  assert.strictEqual(rInterval.rejected, true, 'phải chặn bot chạy setInterval đều nhịp');
+  assert.strictEqual(bot2.cheatFlags, 1);
+
+  // 7c. Script bắn keydown + keyup cùng lúc (dwell time = 0ms)
+  const zeroDwellKeys = Array.from({ length: 18 }, (_, i) => ({ dt: 80 + (i % 5) * 15, dw: 0, bs: 0 }));
+  const rZeroDw = botRoom.progress(bot2.token, 'Học tập là ', start + 3000, { keys: zeroDwellKeys });
+  assert.strictEqual(rZeroDw.rejected, true, 'phải chặn bot bắn phím không có thời gian nhấn giữ (dwell=0)');
+
+  // 7d. Người thật gõ với độ biến thiên nhịp tự nhiên -> được chấp nhận bình thường
+  const humanKeys = [
+    { dt: 145, dw: 72 }, { dt: 98, dw: 61 }, { dt: 180, dw: 88 }, { dt: 112, dw: 54 },
+    { dt: 164, dw: 79 }, { dt: 91, dw: 48 }, { dt: 210, dw: 95 }, { dt: 130, dw: 67 },
+    { dt: 105, dw: 58 }, { dt: 175, dw: 82 }, { dt: 119, dw: 63 }, { dt: 156, dw: 74 },
+    { dt: 88, dw: 51 }, { dt: 195, dw: 91 }, { dt: 134, dw: 69 }, { dt: 142, dw: 77 }
+  ];
+  const rHuman = botRoom.progress(human.token, 'Học tập là ', start + 2500, { keys: humanKeys });
+  assert.strictEqual(rHuman.rejected, false, 'người thật gõ có nhịp tự nhiên phải được chấp nhận');
+  assert.strictEqual(human.correct, 11);
+
   console.log('game.js & passages.js: all tests passed');
 })();

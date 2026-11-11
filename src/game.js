@@ -5,6 +5,14 @@
  *   1. Nhiều ký tự đúng hơn xếp trên.
  *   2. Bằng nhau: ai đạt được số ký tự đúng đó sớm hơn xếp trên.
  *   3. Vẫn bằng: ít lỗi chính tả hơn xếp trên.
+ *
+ * Bảo mật & Chống Auto-Typing / Script ngầm phía Server:
+ *   1. Kiểm tra cờ `untrusted` từ client (khi phát hiện Event.isTrusted=false, paste, can thiệp .value).
+ *   2. Kiểm tra tốc độ tối đa (`MAX_CPS`) & bước nhảy ký tự (`BURST_ALLOWANCE`).
+ *   3. Kiểm tra số lượng phím bấm vật lý (`keyCount`) phải tương xứng với độ dài văn bản gõ.
+ *   4. Phân tích sinh trắc học nhịp gõ (Keystroke Dynamics): kiểm tra độ lệch chuẩn của
+ *      khoảng cách giữa các phím (flight time `dt`) và thời gian giữ phím (dwell time `dw`)
+ *      để chặn các script dùng `setInterval` / `setTimeout` / auto-typer.
  */
 'use strict';
 
@@ -17,10 +25,10 @@ const DURATIONS = [30, 60, 90, 120, 180, 300];
 const MAX_CLASS_PLAYERS = 200;
 
 // Ngưỡng chống auto-text / script bơm ký tự phía server:
-// 25 ký tự/giây ~ 300 WPM (vượt kỷ lục gõ tiếng Việt của người thật).
-const MAX_CPS = 25;
-// Số ký tự tối đa có thể tăng thêm trong một khoảng rất ngắn (bù độ trễ mạng/gõ nhanh cụm từ ngắn).
-const BURST_ALLOWANCE = 14;
+// 22 ký tự/giây ~ 264 WPM.
+const MAX_CPS = 22;
+// Số ký tự tối đa có thể tăng thêm trong một khoảng rất ngắn (bù độ trễ mạng).
+const BURST_ALLOWANCE = 12;
 
 function randomHex(bytes) {
   return crypto.randomBytes(bytes).toString('hex');
@@ -35,7 +43,7 @@ function sanitizeName(name) {
     .slice(0, 24);
 }
 
-function sanitizeSettings(input, type) {
+function sanitizeSettings(input) {
   const s = input || {};
   const duration = DURATIONS.includes(Number(s.duration)) ? Number(s.duration) : 60;
   const source = ['bank', 'ai', 'custom'].includes(s.source) ? s.source : 'bank';
@@ -45,6 +53,47 @@ function sanitizeSettings(input, type) {
     topic: String(s.topic || '').slice(0, 100),
     customText: String(s.customText || '').slice(0, 5000)
   };
+}
+
+function stdDev(arr) {
+  if (!arr || arr.length < 2) return 999;
+  const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
+  const variance = arr.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / arr.length;
+  return Math.sqrt(variance);
+}
+
+/**
+ * Phân tích mảng nhịp gõ vật lý của người chơi để phát hiện script auto-typing ngầm.
+ * Trả về chuỗi lý do nếu phát hiện bot, hoặc null nếu giống người thật.
+ */
+function detectBotKeystrokes(keyHistory) {
+  if (!keyHistory || keyHistory.length < 16) return null;
+  const recent = keyHistory.slice(-24);
+  const dts = recent.map((k) => k.dt);
+  const dws = recent.map((k) => k.dw);
+
+  const avgDt = dts.reduce((a, b) => a + b, 0) / dts.length;
+  const sdDt = stdDev(dts);
+  const sdDw = stdDev(dws);
+  const zeroDwellCount = dws.filter((d) => d <= 2).length;
+
+  // 1. Tốc độ trung bình giữa các phím quá nhanh (< 32ms/phím ~ > 31 phím/giây liên tục)
+  if (avgDt < 32) {
+    return 'Tốc độ phím cơ học vượt ngưỡng người thật (Auto-typer)';
+  }
+  // 2. Script bắn keydown + keyup trong cùng 1 tick (dwell time ~ 0ms)
+  if (zeroDwellCount >= Math.ceil(recent.length * 0.8)) {
+    return 'Phát hiện phím bấm nhân tạo không có thời gian nhấn giữ (Script/Bot)';
+  }
+  // 3. Nhịp gõ quá đều đặn do chạy vòng lặp setInterval / timer cố định
+  if (sdDt < 4.0) {
+    return 'Nhịp gõ đều đặn bất thường (nghi vấn chạy script setInterval tự động gõ)';
+  }
+  // 4. Thời gian nhấn giữ phím (dwell time) cố định nhân tạo
+  if (sdDw < 1.5) {
+    return 'Thời gian giữ phím cố định bất thường (nghi vấn script tự động gõ)';
+  }
+  return null;
 }
 
 class Room {
@@ -160,7 +209,7 @@ class Room {
 
   /**
    * Nhận văn bản người chơi đã gõ, kiểm tra chống gian lận và chấm điểm phía server.
-   * meta: { untrusted?: boolean, reason?: string }
+   * meta: { untrusted?: boolean, reason?: string, keys?: Array<{dt:number, dw:number, bs?:number}> }
    */
   progress(token, typedRaw, now = Date.now(), meta) {
     const p = this.players.get(token);
@@ -179,7 +228,7 @@ class Room {
       .slice(0, this.target.length);
     const target = this.target;
 
-    // --- Kiểm tra tốc độ & bước nhảy ký tự chống paste / extension auto-fill / auto-typer ---
+    // --- 1. Kiểm tra tốc độ & bước nhảy ký tự chống paste / extension auto-fill / auto-typer ---
     const deltaChars = typed.length - p.typedLen;
     const dtSec = Math.max(0.05, (elapsed - p.lastInputMs) / 1000);
     const maxAllowedStep = Math.ceil(dtSec * MAX_CPS) + BURST_ALLOWANCE;
@@ -191,6 +240,35 @@ class Room {
       this.dirty = true;
       return { player: p, rejected: true, reason: p.lastCheatReason, revertTo: p.typed };
     }
+
+    // --- 2. Kiểm tra sinh trắc học nhịp gõ vật lý (khi client gửi kèm telemetry `keys`) ---
+    if (meta && Array.isArray(meta.keys)) {
+      const validKeys = meta.keys
+        .slice(0, 120)
+        .filter((k) => k && typeof k.dt === 'number' && typeof k.dw === 'number' && isFinite(k.dt) && isFinite(k.dw));
+
+      // Nếu văn bản tăng thêm >= 6 ký tự nhưng tổng số phím vật lý gửi lên quá ít -> bơm gói tin trực tiếp qua Socket
+      const nextKeyCount = p.keyCount + validKeys.length;
+      if (deltaChars > 0 && typed.length >= 6 && nextKeyCount < Math.floor(typed.length * 0.6)) {
+        p.cheatFlags++;
+        p.lastCheatReason = 'Phát hiện gửi văn bản tự động không qua sự kiện bàn phím vật lý';
+        this.dirty = true;
+        return { player: p, rejected: true, reason: p.lastCheatReason, revertTo: p.typed };
+      }
+
+      const candidateHistory = p.keyHistory.concat(validKeys).slice(-60);
+      const botReason = detectBotKeystrokes(candidateHistory);
+      if (botReason) {
+        p.cheatFlags++;
+        p.lastCheatReason = botReason;
+        this.dirty = true;
+        return { player: p, rejected: true, reason: botReason, revertTo: p.typed };
+      }
+
+      p.keyCount = nextKeyCount;
+      p.keyHistory = candidateHistory;
+    }
+
     p.lastInputMs = elapsed;
 
     let correct = 0;
@@ -321,6 +399,8 @@ function resetProgress(p) {
   p.finishedMs = null;
   p.cheatFlags = 0;
   p.lastCheatReason = '';
+  p.keyCount = 0;
+  p.keyHistory = [];
 }
 
 class RoomManager {
@@ -330,7 +410,6 @@ class RoomManager {
 
   newCode(type) {
     for (let i = 0; i < 1000; i++) {
-      // Phòng lớp: 6 chữ số. Phòng đấu 1-1: 5 chữ số.
       const code = type === 'duel'
         ? String(Math.floor(10000 + Math.random() * 90000))
         : String(Math.floor(100000 + Math.random() * 900000));
@@ -355,7 +434,6 @@ class RoomManager {
     this.rooms.delete(code);
   }
 
-  /** Xoá phòng không hoạt động. */
   sweep(maxIdleMs, now = Date.now()) {
     for (const [code, room] of this.rooms) {
       if (now - room.lastActivity > maxIdleMs) this.delete(code);
@@ -368,6 +446,7 @@ module.exports = {
   RoomManager,
   sanitizeName,
   sanitizeSettings,
+   detectBotKeystrokes,
   COUNTDOWN_MS,
   GRACE_MS,
   DURATIONS,

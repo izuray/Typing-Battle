@@ -200,18 +200,10 @@
             pracEndAt = pracStartAt + pracDurationMs;
             $('#pracStatus').textContent = 'Đang luyện gõ...';
           }
-          const typed = Array.from(VN.canonical(typedRaw));
-          const target = pracBox.target;
-          let correct = 0;
-          for (let i = 0; i < typed.length; i++) if (typed[i] === target[i]) correct++;
-          const complete = typed.length === target.length;
-          const committed = complete ? typed.length : typed.lastIndexOf(' ') + 1;
-          for (let i = 0; i < committed; i++) {
-            if (typed[i] !== target[i] && !pracWrongMarked.has(i)) {
-              pracWrongMarked.add(i);
-              pracMistakes++;
-            }
-          }
+          const st = pracBox.stats();
+          if (st.mistakes > pracMistakes) pracMistakes = st.mistakes;
+          const correct = st.correct;
+          const complete = st.typedLen === st.total && st.total > 0;
           const elapsedMin = pracRunning ? Math.max(0.02, (Date.now() - pracStartAt) / 60000) : 0;
           const wpm = elapsedMin > 0 ? Math.round(correct / 5 / elapsedMin) : 0;
           const acc = correct + pracMistakes > 0 ? Math.round((correct / (correct + pracMistakes)) * 1000) / 10 : 100;
@@ -219,9 +211,10 @@
           $('#pracErr').textContent = pracMistakes;
           $('#pracWpm').textContent = wpm;
           $('#pracAcc').textContent = acc + '%';
-          if (complete && correct === target.length) finishPractice();
+          if (complete && correct === st.total) finishPractice();
         }
       });
+      try { delete window.TypingBox; } catch (_) {}
 
       function finishPractice() {
         pracRunning = false;

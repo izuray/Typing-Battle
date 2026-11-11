@@ -30,6 +30,7 @@
 
   // ---------- state ----------
   const socket = io();
+  try { delete window.io; } catch (_) {} // Ngăn script bên ngoài tự mở kết nối Socket thứ 2
   const code = param('room');
   let me = { id: null, token: null, name: myName };
   let snap = null;
@@ -37,7 +38,7 @@
   let clock = null;
   let sendTimer = null;
 
-  // ---------- typing box (đoạn văn ở trên + ô gõ ở dưới) ----------
+  // ---------- typing box (đoạn văn vẽ trên Canvas ở trên + ô gõ khoá .value ở dưới) ----------
   const box = new TypingBox({
     passageEl: $('#passage'),
     inputEl: $('#typingInput'),
@@ -47,13 +48,14 @@
       if (sendTimer) return;
       sendTimer = setTimeout(() => {
         sendTimer = null;
-        socket.emit('progress', { typed: box.typed });
+        socket.emit('progress', { typed: box.typed, keys: box.flushTelemetry() });
       }, 80);
     },
     onCheatAttempt: (reason) => {
       socket.emit('progress', { typed: box.typed, untrusted: true, reason });
     }
   });
+  try { delete window.TypingBox; } catch (_) {} // Xoá constructor khỏi window sau khi khởi tạo xong
 
   function sessionKey(c) { return 'tb_player_' + c; }
   function saveSession() {
@@ -246,7 +248,7 @@
     $('#timerBox').classList.toggle('low', rem < 10000);
     if (rem <= 0 && box.enabled) {
       box.enable(false);
-      socket.emit('progress', { typed: box.typed });
+      socket.emit('progress', { typed: box.typed, keys: box.flushTelemetry() });
     }
   }
   setInterval(tickClock, 150);

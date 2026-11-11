@@ -305,7 +305,8 @@ io.on('connection', (socket) => {
     const now = Date.now();
     const res = room.progress(player.token, payload.typed, now, {
       untrusted: !!payload.untrusted,
-      reason: payload.reason
+      reason: payload.reason,
+      keys: Array.isArray(payload.keys) ? payload.keys : []
     });
     if (!res) return;
     if (res.rejected) {

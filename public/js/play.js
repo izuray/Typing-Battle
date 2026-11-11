@@ -122,11 +122,7 @@
       $('#gameLayout').className = 'layout-side';
       $('#srcLabel').textContent = SOURCE_LABEL[s.passageSource] || '';
 
-      if (s.state === 'countdown') {
-        if (loadedRound !== s.round) {
-          box.setGlyphs(null, '', '');
-        }
-      } else if (s.glyphs && loadedRound !== s.round) {
+      if (s.glyphs && loadedRound !== s.round) {
         loadedRound = s.round;
         box.setGlyphs(s.glyphs, '', '');
       }

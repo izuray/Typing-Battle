@@ -606,7 +606,7 @@ class Room {
    * - Chỉ gửi `glyphs` (vector paths) khi vòng thi đã thực sự `running` hoặc `finished` (không gửi lúc countdown).
    */
   snapshot(now = Date.now()) {
-    const showGlyphs = this.state === 'running' || this.state === 'finished';
+    const showGlyphs = this.state !== 'lobby';
     return {
       code: this.code,
       type: this.type,

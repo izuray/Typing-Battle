@@ -23,7 +23,7 @@ const { signTeacherToken, verifyTeacherToken } = require('../server');
 
   const snapCountdown = room.snapshot(t0 + 500);
   assert.strictEqual(snapCountdown.passage, '', 'sinh viên không được nhận passage dạng chữ');
-  assert.strictEqual(snapCountdown.glyphs, null, 'trong lúc đếm ngược chưa gửi glyphs');
+  assert(snapCountdown.glyphs && snapCountdown.glyphs.paths.length > 20, 'chỉ gửi nét vẽ vector (glyphs)');
   assert(room.teacherSnapshot(t0 + 500).passage.startsWith('Học tập'), 'giảng viên vẫn xem được đoạn văn');
 
   assert.strictEqual(room.tick(start), true);
